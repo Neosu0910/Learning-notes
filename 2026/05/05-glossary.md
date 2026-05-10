@@ -325,3 +325,181 @@ s.close()                # 跟關檔案一樣用 close
 - 統一介面，學一套就能操作所有東西
 - 可以用 shell 的 pipe（`|`）把任何程式的輸出接到另一個程式
 - 權限管理統一，用檔案權限（rwx）控制所有資源的存取
+
+---
+
+## 0508
+
+**浮點運算子（Floating Point）**
+
+電腦用來表示「有小數點的數字」的方式。因為電腦只懂 0 和 1，無法精確儲存所有小數，所以用一種近似的格式（IEEE 754 標準）來表示，這就是「浮點數」。
+
+**原理：**
+浮點數由三個部分組成：
+- **符號位**：正數或負數
+- **指數**：決定小數點的位置
+- **尾數（mantissa）**：實際的數字內容
+
+就像科學記號：`3.14 × 10²` = 314，電腦也是用類似的方式儲存。
+
+**為什麼會有精度問題：**
+某些小數在二進位裡是無限循環的，就像 1/3 在十進位是 0.333...，電腦只能截斷，所以會有誤差。
+
+**實作範例：**
+```python
+# 浮點數精度問題
+print(0.1 + 0.2)          # 0.30000000000000004（不是 0.3！）
+print(0.1 + 0.2 == 0.3)   # False
+
+# 正確的比較方式
+import math
+print(math.isclose(0.1 + 0.2, 0.3))  # True
+
+# 需要精確小數時（例如金融計算），用 Decimal
+from decimal import Decimal
+print(Decimal("0.1") + Decimal("0.2"))  # 0.3（精確）
+```
+
+**常見的浮點運算子：**
+```python
+a = 3.14
+b = 2.0
+
+print(a + b)   # 加法：5.140000000000001
+print(a - b)   # 減法：1.14
+print(a * b)   # 乘法：6.28
+print(a / b)   # 除法：1.57
+print(a // b)  # 整除：1.0（結果還是 float）
+print(a % b)   # 取餘數：1.14
+print(a ** b)  # 次方：9.8596
+```
+
+**實際情境：**
+- 金融系統絕對不能用 float，要用 `Decimal`
+- 科學計算可以接受小誤差，用 float 沒問題
+- 比較兩個浮點數時，用 `math.isclose()` 而不是 `==`
+
+---
+
+**Spark（Apache Spark）**
+
+一個開源的大數據分散式運算框架，用來處理超大量資料（GB、TB 甚至 PB 等級）。它把資料分散到多台機器上同時處理，速度比傳統的 Hadoop MapReduce 快很多，因為它盡量把資料放在記憶體裡運算，而不是每次都寫到硬碟。
+
+**解決什麼問題：**
+當資料量大到一台機器處理不完，或處理速度太慢時，Spark 把工作切成很多小塊，分給一群機器（cluster）同時跑，最後再把結果合併。
+
+**核心概念：**
+- **RDD（Resilient Distributed Dataset）**：Spark 的基本資料結構，一個分散在多台機器上的資料集合
+- **DataFrame**：類似 pandas DataFrame，但可以分散式處理，是現在最常用的方式
+- **Transformation vs Action**：
+  - Transformation（如 `filter`、`map`）：懶執行，只是描述要做什麼，不會立刻跑
+  - Action（如 `collect`、`count`）：真正觸發執行
+
+**實作範例（PySpark）：**
+```python
+from pyspark.sql import SparkSession
+
+# 建立 Spark session
+spark = SparkSession.builder \
+    .appName("MyApp") \
+    .getOrCreate()
+
+# 讀取資料（可以是 CSV、Parquet、S3 上的檔案等）
+df = spark.read.csv("s3://my-bucket/data.csv", header=True, inferSchema=True)
+
+# 類似 SQL 的操作
+df.filter(df["age"] > 25) \
+  .groupBy("department") \
+  .count() \
+  .show()
+
+# 也可以直接寫 SQL
+df.createOrReplaceTempView("employees")
+spark.sql("SELECT department, COUNT(*) FROM employees WHERE age > 25 GROUP BY department").show()
+```
+
+**在 AWS 上的對應服務：**
+- **AWS EMR（Elastic MapReduce）**：在 AWS 上跑 Spark cluster 的託管服務
+- **AWS Glue**：serverless 的 Spark 環境，不用管 cluster，直接寫 PySpark 腳本
+
+**與 pandas 的差別：**
+| | pandas | Spark |
+|--|--------|-------|
+| 資料量 | 單機記憶體內（幾 GB） | 分散式（TB、PB）|
+| 執行方式 | 立刻執行 | 懶執行（lazy evaluation）|
+| 學習曲線 | 簡單 | 較複雜 |
+| 適合場景 | 資料分析、小資料 | 大數據處理、ETL |
+
+---
+
+**CloudWatch Log Streams**
+
+AWS CloudWatch 是 AWS 的監控與日誌服務。Log Streams 是其中的日誌組織單位之一。
+
+**三層結構：**
+```
+CloudWatch Logs
+└── Log Group（日誌群組）
+    └── Log Stream（日誌串流）  ← 你聽到的這個
+        └── Log Events（一筆一筆的日誌）
+```
+
+- **Log Group**：一個服務或應用的所有日誌的集合，例如 `/aws/lambda/my-function`
+- **Log Stream**：Log Group 裡面，來自同一個來源的日誌序列。例如每次 Lambda 啟動一個新的 instance，就會產生一個新的 Log Stream
+- **Log Event**：每一筆實際的日誌訊息，有 timestamp 和內容
+
+**為什麼要有 Log Stream：**
+當你的服務有多個 instance 同時跑（例如 Lambda 同時被呼叫 100 次），每個 instance 的日誌會分別寫到不同的 Log Stream，這樣才不會混在一起，方便追蹤特定 instance 的行為。
+
+**實際情境：**
+```
+Log Group: /aws/lambda/order-processor
+├── Log Stream: 2026/05/08/[$LATEST]abc123  ← Lambda instance 1 的日誌
+├── Log Stream: 2026/05/08/[$LATEST]def456  ← Lambda instance 2 的日誌
+└── Log Stream: 2026/05/08/[$LATEST]ghi789  ← Lambda instance 3 的日誌
+```
+
+**用 AWS CLI 查看 Log Streams：**
+```bash
+# 列出某個 Log Group 的所有 Log Streams
+aws logs describe-log-streams \
+  --log-group-name /aws/lambda/my-function \
+  --order-by LastEventTime \
+  --descending
+
+# 讀取某個 Log Stream 的內容
+aws logs get-log-events \
+  --log-group-name /aws/lambda/my-function \
+  --log-stream-name "2026/05/08/[\$LATEST]abc123"
+```
+
+**用 Python boto3 查看：**
+```python
+import boto3
+
+client = boto3.client("logs", region_name="ap-northeast-1")
+
+# 取得最新的 log stream
+response = client.describe_log_streams(
+    logGroupName="/aws/lambda/my-function",
+    orderBy="LastEventTime",
+    descending=True,
+    limit=1
+)
+
+latest_stream = response["logStreams"][0]["logStreamName"]
+
+# 讀取日誌內容
+events = client.get_log_events(
+    logGroupName="/aws/lambda/my-function",
+    logStreamName=latest_stream
+)
+
+for event in events["events"]:
+    print(event["message"])
+```
+
+**與 Log Group 的關係總結：**
+- 你通常在 CloudWatch Console 先找到 Log Group（對應你的服務）
+- 再進去找最新的 Log Stream（對應某次執行或某個 instance）
+- 最後看裡面的 Log Events（實際的錯誤訊息或輸出）
