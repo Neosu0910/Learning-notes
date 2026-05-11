@@ -503,3 +503,257 @@ for event in events["events"]:
 - 你通常在 CloudWatch Console 先找到 Log Group（對應你的服務）
 - 再進去找最新的 Log Stream（對應某次執行或某個 instance）
 - 最後看裡面的 Log Events（實際的錯誤訊息或輸出）
+
+## 0509
+
+**Git LFS（Large File Storage）**
+
+Git 本身設計來追蹤程式碼（文字檔），對大型二進位檔案（圖片、影片、模型檔、資料集）非常不友善。Git LFS 是 Git 的擴充套件，專門解決這個問題：它把大檔案的實際內容存到另一個地方（LFS 伺服器），Git repo 裡只保留一個「指標檔案」（pointer file），讓 repo 保持輕量。
+
+**為什麼 Git 不適合大檔案：**
+Git 每次 commit 都會儲存整個檔案的快照。如果你 commit 了一個 100MB 的模型檔，之後又修改再 commit，repo 裡就會有兩份 100MB，以此類推，repo 會越來越肥，clone 和 pull 都會很慢。
+
+**Git LFS 的運作方式：**
+```
+一般 Git：
+  repo 裡存 → 實際的大檔案內容（100MB）
+
+Git LFS：
+  repo 裡存 → pointer file（幾百 bytes）
+  LFS 伺服器存 → 實際的大檔案內容（100MB）
+```
+
+pointer file 長這樣：
+```
+version https://git-lfs.github.com/spec/v1
+oid sha256:4d7a214614ab2935c943f9e0ff69d22eadbb8f32b1258daaa5e2ca24d17e2393
+size 12345678
+```
+
+**實作：**
+```bash
+# 安裝 Git LFS
+brew install git-lfs        # macOS
+git lfs install             # 初始化（每台機器只需做一次）
+
+# 在 repo 裡設定要追蹤哪些類型的大檔案
+git lfs track "*.psd"
+git lfs track "*.mp4"
+git lfs track "*.bin"
+git lfs track "models/**"
+
+# 這會產生 .gitattributes 檔案，要一起 commit
+git add .gitattributes
+git commit -m "Add LFS tracking rules"
+
+# 之後正常 add/commit/push，LFS 會自動處理
+git add large-model.bin
+git commit -m "Add model file"
+git push origin main        # 大檔案會上傳到 LFS 伺服器，pointer 進 repo
+```
+
+**查看 LFS 狀態：**
+```bash
+# 查看哪些檔案被 LFS 追蹤
+git lfs ls-files
+
+# 查看 LFS 追蹤規則
+git lfs track
+```
+
+**適用場景：**
+- 機器學習模型檔（`.bin`、`.pt`、`.onnx`）
+- 設計稿（`.psd`、`.sketch`、`.fig`）
+- 影音素材（`.mp4`、`.wav`）
+- 資料集（`.csv` 超過幾十 MB 時）
+
+**注意事項：**
+- GitHub 免費帳號有 1GB LFS 儲存空間和每月 1GB 頻寬限制，超過要付費
+- clone 時預設會下載 LFS 檔案，如果只想要程式碼可以用 `GIT_LFS_SKIP_SMUDGE=1 git clone`
+
+---
+
+**Metadata（元資料）**
+
+Metadata 是「描述資料的資料」，本身不是主要內容，而是關於那份內容的附加資訊。
+
+**直觀理解：**
+- 一張照片的 metadata：拍攝時間、GPS 座標、相機型號、解析度
+- 一個 MP3 的 metadata：歌手、專輯、年份、曲目編號
+- 一個 S3 物件的 metadata：Content-Type、上傳時間、自訂標籤
+
+**Metadata 的分類：**
+
+| 類型 | 說明 | 例子 |
+|------|------|------|
+| 描述性 Metadata | 描述內容是什麼 | 標題、作者、關鍵字 |
+| 結構性 Metadata | 描述資料的格式與結構 | 檔案格式、欄位定義、schema |
+| 管理性 Metadata | 用於管理和存取控制 | 建立時間、版本、權限 |
+| 技術性 Metadata | 技術規格 | 解析度、編碼格式、檔案大小 |
+
+**在 AWS 的情境：**
+
+S3 物件 Metadata：
+```python
+import boto3
+
+s3 = boto3.client("s3")
+
+# 上傳時附加 metadata
+s3.put_object(
+    Bucket="my-bucket",
+    Key="report.pdf",
+    Body=file_content,
+    ContentType="application/pdf",
+    Metadata={                          # 自訂 metadata（key-value）
+        "author": "neo",
+        "department": "engineering",
+        "version": "2.0"
+    }
+)
+
+# 讀取 metadata（不下載檔案本體）
+response = s3.head_object(Bucket="my-bucket", Key="report.pdf")
+print(response["Metadata"])             # {'author': 'neo', ...}
+print(response["ContentType"])          # 'application/pdf'
+print(response["LastModified"])         # 最後修改時間
+print(response["ContentLength"])        # 檔案大小（bytes）
+```
+
+EC2 Instance Metadata（IMDS）：
+```bash
+# EC2 instance 可以查詢自己的 metadata
+TOKEN=$(curl -X PUT "http://169.254.169.254/latest/api/token" \
+  -H "X-aws-ec2-metadata-token-ttl-seconds: 21600")
+
+# 查詢 instance ID
+curl -H "X-aws-ec2-metadata-token: $TOKEN" \
+  http://169.254.169.254/latest/meta-data/instance-id
+
+# 查詢所在的 AZ
+curl -H "X-aws-ec2-metadata-token: $TOKEN" \
+  http://169.254.169.254/latest/meta-data/placement/availability-zone
+```
+
+**在資料庫的情境：**
+```sql
+-- 資料表本身是資料，資料表的 schema 就是 metadata
+-- information_schema 是 PostgreSQL 存放 metadata 的地方
+
+-- 查詢某個資料庫裡所有資料表的 metadata
+SELECT table_name, table_type
+FROM information_schema.tables
+WHERE table_schema = 'public';
+
+-- 查詢某個資料表的欄位 metadata
+SELECT column_name, data_type, is_nullable
+FROM information_schema.columns
+WHERE table_name = 'users';
+```
+
+**Metadata 的重要性：**
+- 不用讀取整個檔案就能知道基本資訊（省時省流量）
+- 搜尋和過濾的依據（例如 S3 用 metadata 做標籤搜尋）
+- 稽核和合規（記錄誰在什麼時候做了什麼）
+
+---
+
+**Transfer Agent（傳輸代理）**
+
+Transfer Agent 是負責在不同系統、位置或格式之間**搬移和轉換資料**的元件或服務。它扮演中間人的角色，處理資料的讀取、轉換、傳輸、以及寫入目標。
+
+**廣義定義：**
+任何負責「把資料從 A 搬到 B」的程式或服務都可以叫 Transfer Agent，重點在於它通常還會處理：
+- 協定轉換（例如從 FTP 轉成 HTTPS）
+- 格式轉換（例如 CSV 轉 JSON）
+- 錯誤重試與斷點續傳
+- 傳輸狀態追蹤
+
+**在 AWS 的對應服務：**
+
+**AWS DataSync**（最典型的 Transfer Agent）：
+```
+本地 NAS / S3 / EFS / FSx
+        ↓
+   DataSync Agent（安裝在本地或 EC2）
+        ↓
+   AWS DataSync Service（管理、排程、監控）
+        ↓
+   目標：S3 / EFS / FSx
+```
+
+```bash
+# 用 AWS CLI 建立 DataSync 任務
+aws datasync create-task \
+  --source-location-arn arn:aws:datasync:...:location/loc-xxx \
+  --destination-location-arn arn:aws:datasync:...:location/loc-yyy \
+  --name "nightly-backup"
+
+# 啟動傳輸任務
+aws datasync start-task-execution \
+  --task-arn arn:aws:datasync:...:task/task-xxx
+```
+
+**AWS Transfer Family**（另一個相關服務）：
+提供 SFTP、FTP、FTPS 協定的託管端點，讓外部系統可以用傳統的檔案傳輸協定把資料傳進 S3 或 EFS。
+
+```
+外部合作夥伴（用 SFTP 上傳）
+        ↓
+   AWS Transfer Family（SFTP Server）
+        ↓
+   S3 Bucket
+```
+
+**自己實作一個簡單的 Transfer Agent（Python）：**
+```python
+import boto3
+import os
+import time
+from pathlib import Path
+
+class SimpleTransferAgent:
+    def __init__(self, bucket_name, local_dir, prefix=""):
+        self.s3 = boto3.client("s3")
+        self.bucket = bucket_name
+        self.local_dir = Path(local_dir)
+        self.prefix = prefix
+
+    def transfer(self, retry=3):
+        """把本地目錄的所有檔案上傳到 S3"""
+        for file_path in self.local_dir.rglob("*"):
+            if file_path.is_file():
+                s3_key = f"{self.prefix}/{file_path.name}"
+                for attempt in range(retry):
+                    try:
+                        self.s3.upload_file(str(file_path), self.bucket, s3_key)
+                        print(f"✓ 上傳成功：{file_path.name} → s3://{self.bucket}/{s3_key}")
+                        break
+                    except Exception as e:
+                        if attempt == retry - 1:
+                            print(f"✗ 上傳失敗（已重試 {retry} 次）：{file_path.name}，錯誤：{e}")
+                        else:
+                            time.sleep(2 ** attempt)  # exponential backoff
+
+# 使用
+agent = SimpleTransferAgent(
+    bucket_name="my-data-bucket",
+    local_dir="/data/exports",
+    prefix="daily-exports/2026-05-09"
+)
+agent.transfer()
+```
+
+**Transfer Agent 的核心功能：**
+| 功能 | 說明 |
+|------|------|
+| 斷點續傳 | 傳輸中斷後從上次的位置繼續，不用重頭來 |
+| 錯誤重試 | 遇到暫時性錯誤自動重試（exponential backoff）|
+| 進度追蹤 | 記錄哪些檔案已傳、哪些失敗 |
+| 並行傳輸 | 同時傳多個檔案，提升吞吐量 |
+| 完整性驗證 | 傳完後比對 checksum，確認資料沒有損壞 |
+
+**常見使用場景：**
+- 資料遷移：把本地資料中心的資料搬到 AWS S3
+- ETL 管線的第一步：把原始資料從來源傳到 Data Lake
+- 合作夥伴資料交換：接收外部廠商定期上傳的報表或資料檔
