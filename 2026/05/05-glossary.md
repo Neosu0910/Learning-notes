@@ -757,3 +757,226 @@ agent.transfer()
 - 資料遷移：把本地資料中心的資料搬到 AWS S3
 - ETL 管線的第一步：把原始資料從來源傳到 Data Lake
 - 合作夥伴資料交換：接收外部廠商定期上傳的報表或資料檔
+
+## 0510
+
+**echo $?（上一個指令的結束碼）**
+
+`$?` 是 Shell 的一個特殊變數，儲存**上一個指令執行完後的結束碼（Exit Code）**。`echo $?` 就是把這個數字印出來。
+
+**Exit Code 的規則：**
+- `0` = 成功（指令正常結束）
+- 非 `0`（1、2、127 等）= 失敗（不同數字代表不同錯誤類型）
+
+這是 Unix 的慣例，所有程式都應該遵守。
+
+**實作範例：**
+```bash
+# 成功的指令
+ls /tmp
+echo $?       # 0（成功）
+
+# 失敗的指令
+ls /不存在的路徑
+echo $?       # 2（No such file or directory）
+
+# 找不到指令
+blahblah
+echo $?       # 127（command not found）
+
+# 手動設定 exit code（在 script 裡）
+exit 0        # 成功結束
+exit 1        # 失敗結束
+```
+
+**在 Shell Script 裡的應用：**
+```bash
+#!/bin/bash
+
+# 方法一：用 $? 判斷
+python3 my_script.py
+if [ $? -ne 0 ]; then
+    echo "Script 執行失敗！"
+    exit 1
+fi
+
+# 方法二：更簡潔的寫法（直接用指令的結果）
+if ! python3 my_script.py; then
+    echo "Script 執行失敗！"
+    exit 1
+fi
+
+# 方法三：失敗就立刻停止整個 script（推薦加在 script 開頭）
+set -e          # 任何指令失敗就立刻退出
+set -o pipefail # pipe 中任一段失敗也算失敗
+
+python3 step1.py
+python3 step2.py   # 如果 step1 失敗，這行不會執行
+```
+
+**常見 Exit Code 對照：**
+| Code | 意義 |
+|------|------|
+| 0 | 成功 |
+| 1 | 一般性錯誤 |
+| 2 | 指令用法錯誤（如參數錯誤） |
+| 126 | 指令存在但無法執行（權限不足） |
+| 127 | 找不到指令（command not found） |
+| 130 | 被 Ctrl+C 中斷（SIGINT） |
+| 137 | 被 kill -9 強制終止（SIGKILL） |
+
+**在 CI/CD 的重要性：**
+GitHub Actions、Jenkins 等 CI 工具都依賴 exit code 來判斷步驟是否成功。你的程式或 script 一定要在失敗時回傳非 0 的 exit code，否則 CI 會誤以為成功。
+
+---
+
+**mkdir -p（遞迴建立目錄）**
+
+`mkdir` 是建立目錄的指令，`-p`（`--parents`）旗標讓它可以**一次建立多層不存在的目錄**，而且如果目錄已存在也不會報錯。
+
+**沒有 `-p` 的問題：**
+```bash
+mkdir a/b/c
+# 如果 a 或 a/b 不存在，會報錯：
+# mkdir: a/b: No such file or directory
+```
+
+**有 `-p` 的行為：**
+```bash
+mkdir -p a/b/c
+# 不管 a、a/b 存不存在，一律建立整條路徑
+# 如果已存在，靜默跳過，不報錯
+```
+
+**實際使用情境：**
+```bash
+# 建立多層專案目錄結構
+mkdir -p project/{src,tests,docs}/{utils,models}
+# 展開後等於：
+# mkdir -p project/src/utils
+# mkdir -p project/src/models
+# mkdir -p project/tests/utils
+# ... 以此類推
+
+# 建立帶日期的備份目錄
+DATE=$(date +%Y-%m-%d)
+mkdir -p /backups/$DATE/logs
+mkdir -p /backups/$DATE/data
+
+# 在 Shell Script 裡確保目錄存在再寫檔
+OUTPUT_DIR="/tmp/reports/$(date +%Y%m%d)"
+mkdir -p "$OUTPUT_DIR"
+echo "report content" > "$OUTPUT_DIR/report.txt"
+```
+
+**在 Dockerfile 裡很常見：**
+```dockerfile
+# 建立應用程式目錄
+RUN mkdir -p /app/logs /app/uploads /app/config
+
+WORKDIR /app
+COPY . .
+```
+
+**`-p` 的兩個功能總結：**
+1. **遞迴建立**：自動建立所有中間層目錄
+2. **冪等性（Idempotent）**：執行多次結果相同，不會因為目錄已存在而失敗
+
+冪等性在 script 和自動化部署裡很重要，讓你的 script 可以安全地重複執行。
+
+---
+
+**符號連結（Symbolic Link / Symlink）**
+
+符號連結是一種特殊的檔案，它的內容是**指向另一個檔案或目錄的路徑**。類似 Windows 的「捷徑」，但在 Unix/Linux 裡是一等公民，幾乎所有程式都能透明地使用它。
+
+**兩種連結的比較：**
+
+| | 符號連結（Symbolic Link）| 硬連結（Hard Link）|
+|--|--------------------------|-------------------|
+| 指向 | 路徑（可跨檔案系統）| inode（同一檔案系統）|
+| 原始檔刪除後 | 連結失效（dangling link）| 檔案仍然存在 |
+| 可指向目錄 | 可以 | 不行 |
+| 跨磁碟/分割區 | 可以 | 不行 |
+| 常用程度 | 非常常用 | 較少用 |
+
+**建立符號連結：**
+```bash
+# ln -s <目標（真實路徑）> <連結名稱>
+ln -s /usr/local/bin/python3.11 /usr/local/bin/python3
+
+# 建立後查看
+ls -la /usr/local/bin/python3
+# lrwxr-xr-x  python3 -> /usr/local/bin/python3.11
+# 'l' 開頭代表這是一個 symlink，-> 後面是指向的目標
+```
+
+**常見使用情境：**
+
+```bash
+# 1. 版本管理：讓 python 指向特定版本
+ln -s /usr/bin/python3.11 /usr/local/bin/python
+python --version   # Python 3.11.x
+
+# 2. 設定檔管理（dotfiles）：把設定檔放在 git repo，用 symlink 連到家目錄
+ln -s ~/dotfiles/.zshrc ~/.zshrc
+ln -s ~/dotfiles/.vimrc ~/.vimrc
+# 這樣設定檔可以用 git 管理，又能在正確位置生效
+
+# 3. 讓多個路徑指向同一份資料
+ln -s /data/shared/models /app/models
+ln -s /data/shared/models /ml-service/models
+# 兩個服務共用同一份模型，不用複製
+
+# 4. 建立「current」指向最新版本
+ln -s /releases/v2.3.0 /releases/current
+# 部署新版本時只需更新 symlink，不用改應用程式設定
+```
+
+**在 Python 裡操作 symlink：**
+```python
+import os
+from pathlib import Path
+
+# 建立 symlink
+os.symlink("/data/models/v2", "/app/models/current")
+
+# 用 pathlib（更現代的寫法）
+target = Path("/data/models/v2")
+link = Path("/app/models/current")
+link.symlink_to(target)
+
+# 判斷是否為 symlink
+print(link.is_symlink())    # True
+
+# 讀取 symlink 指向的目標
+print(os.readlink("/app/models/current"))   # /data/models/v2
+print(link.resolve())                        # 解析成絕對路徑
+
+# 刪除 symlink（只刪連結，不刪原始檔）
+link.unlink()
+```
+
+**注意事項：**
+```bash
+# 建立指向目錄的 symlink 時，目標路徑結尾不要加 /
+ln -s /data/logs myapp-logs      # ✓ 正確
+ln -s /data/logs/ myapp-logs     # ✗ 可能造成非預期行為
+
+# 刪除 symlink 用 rm，不要用 rmdir
+rm myapp-logs        # ✓ 只刪連結
+rmdir myapp-logs     # ✗ 會報錯（它是 symlink，不是真正的目錄）
+
+# 確認 symlink 是否失效（dangling）
+file myapp-logs
+# 如果顯示 "broken symbolic link" 代表目標已不存在
+```
+
+**在 AWS / Docker 的應用：**
+```dockerfile
+# Dockerfile 裡常用 symlink 讓 log 輸出到 stdout
+RUN ln -sf /dev/stdout /var/log/nginx/access.log \
+    && ln -sf /dev/stderr /var/log/nginx/error.log
+# 這樣 nginx 的 log 會直接輸出到 container 的 stdout/stderr
+# Docker 和 CloudWatch 就能收集到這些 log
+```

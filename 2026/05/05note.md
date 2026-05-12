@@ -20,3 +20,7 @@ git LFS
 metadata
 transfer agent 
 
+0510
+echo $? 
+mkdir -p 
+符號連結 (symbolic link) 
