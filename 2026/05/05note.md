@@ -24,3 +24,11 @@ transfer agent
 echo $? 
 mkdir -p 
 符號連結 (symbolic link) 
+
+0511
+CD pipeline
+抽象化（一個蘋果加一個蘋果，一個橘子加一個橘子，都可以比喻成1+1=2，這就是抽象化）
+"如何學會建立假設-（描述事實，問題給baseline）驗證假設，未來做任何事情都能有這套sop"
+terraform import output
+參考網址:https://medium.com/@minghunghsieh/day-11-terraform%E5%9F%BA%E7%A4%8E-%E8%AE%8A%E6%95%B8-variables-%E8%88%87%E8%BC%B8%E5%87%BA-outputs-50e09e793bb7
+

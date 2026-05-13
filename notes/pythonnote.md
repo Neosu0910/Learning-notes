@@ -494,3 +494,374 @@ print("a", "b", sep=", ")     # a, b
 - List = Array，Dictionary = Object
 - f-string 是字串格式化的最佳選擇：`f"Hello, {name}"`
 - `self` 在 class 裡等同於 JS 的 `this`
+
+---
+
+## 14. Pydantic（資料驗證與型別強制）
+
+Pydantic 是 Python 最常用的資料驗證函式庫，FastAPI 底層就是用它來處理 request/response 的型別驗證。核心概念是：**用 Python 的 type hint 定義資料結構，Pydantic 自動幫你驗證和轉換資料**。
+
+```bash
+pip install pydantic
+```
+
+---
+
+### 基本用法：BaseModel
+
+```python
+from pydantic import BaseModel
+
+class User(BaseModel):
+    name: str
+    age: int
+    email: str
+    is_active: bool = True  # 有預設值，可以不傳
+
+# 建立實例（自動驗證）
+user = User(name="Alice", age=25, email="alice@example.com")
+print(user.name)      # Alice
+print(user.age)       # 25
+print(user.is_active) # True（預設值）
+
+# 自動型別轉換（coercion）
+user2 = User(name="Bob", age="30", email="bob@example.com")
+# age 傳了字串 "30"，Pydantic 自動轉成 int 30
+print(type(user2.age))  # <class 'int'>
+
+# 驗證失敗會拋出 ValidationError
+try:
+    bad_user = User(name="Charlie", age="not_a_number", email="c@c.com")
+except Exception as e:
+    print(e)
+# age: Input should be a valid integer...
+```
+
+```javascript
+// JavaScript 沒有內建等效工具，通常用 Zod 或 Joi
+import { z } from "zod";
+const UserSchema = z.object({
+    name: z.string(),
+    age: z.number(),
+    email: z.string().email(),
+});
+```
+
+---
+
+### Optional 欄位與 None
+
+```python
+from pydantic import BaseModel
+from typing import Optional
+
+class Product(BaseModel):
+    name: str
+    price: float
+    description: Optional[str] = None  # 可以是 str 或 None，預設 None
+
+p1 = Product(name="Apple", price=1.5)
+print(p1.description)  # None
+
+p2 = Product(name="Banana", price=0.8, description="Fresh banana")
+print(p2.description)  # Fresh banana
+```
+
+Python 3.10+ 可以用更簡潔的寫法：
+```python
+class Product(BaseModel):
+    description: str | None = None  # 等同於 Optional[str] = None
+```
+
+---
+
+### 巢狀 Model（Nested Model）
+
+「巢狀」的意思是：一個 model 的某個欄位，它的型別是**另一個 model**，而不是單純的 `str` 或 `int`。
+
+先定義三個獨立的 model，每個 model 就像一張表單，有自己的欄位：
+
+```python
+from pydantic import BaseModel
+from typing import List
+
+# 表單一：地址（有 city 和 country 兩個欄位）
+class Address(BaseModel):
+    city: str
+    country: str
+
+# 表單二：訂單（有 item 和 quantity 兩個欄位）
+class Order(BaseModel):
+    item: str      # 買什麼商品
+    quantity: int  # 買幾個
+
+# 表單三：使用者（address 欄位的型別是 Address model，不是 str）
+class User(BaseModel):
+    name: str
+    address: Address          # 這個欄位要填一個 Address 物件
+    orders: List[Order] = []  # 這個欄位是一個 list，裡面每個元素都是 Order 物件
+```
+
+建立 User 時，`address` 和 `orders` 可以直接傳 **dict**，Pydantic 會自動幫你轉換：
+
+```python
+user = User(
+    name="Alice",
+    # address 欄位型別是 Address，傳入 dict，Pydantic 自動轉成 Address 物件
+    address={"city": "Taipei", "country": "Taiwan"},
+    # orders 欄位是 List[Order]，傳入 dict 的 list
+    # 每個 dict 對應 Order 的欄位：item（買什麼）和 quantity（買幾個）
+    orders=[
+        {"item": "Book", "quantity": 2},   # 買 2 本書
+        {"item": "Pen",  "quantity": 5},   # 買 5 支筆
+    ]
+)
+```
+
+存取資料時，用 `.` 一層一層往下取：
+
+```python
+print(user.name)              # Alice
+print(user.address.city)      # Taipei（address 是 Address 物件，再取 .city）
+print(user.address.country)   # Taiwan
+print(user.orders[0].item)    # Book（orders[0] 是第一個 Order 物件，取 .item）
+print(user.orders[0].quantity)# 2
+print(user.orders[1].item)    # Pen
+print(user.orders[1].quantity)# 5
+
+# 注意：address 已經是 Address 物件，不是原本的 dict
+print(type(user.address))     # <class '__main__.Address'>
+print(type(user.orders[0]))   # <class '__main__.Order'>
+```
+
+也可以先建好物件再傳入，效果完全一樣：
+
+```python
+# 方法一：直接傳 dict（上面的做法）
+user = User(name="Alice", address={"city": "Taipei", "country": "Taiwan"}, ...)
+
+# 方法二：先建好 Address 物件再傳入
+addr = Address(city="Taipei", country="Taiwan")
+user = User(name="Alice", address=addr, ...)
+# 兩種寫法結果完全相同，方法一比較簡潔
+```
+
+---
+
+### Field：欄位細部設定
+
+`Field` 讓你對每個欄位加上更多限制和說明：
+
+```python
+from pydantic import BaseModel, Field
+
+class Product(BaseModel):
+    name: str = Field(min_length=1, max_length=100, description="商品名稱")
+    price: float = Field(gt=0, description="價格，必須大於 0")
+    quantity: int = Field(ge=0, le=9999, description="庫存數量")
+    sku: str = Field(pattern=r"^[A-Z]{3}-\d{4}$", description="格式：ABC-1234")
+
+# 驗證
+try:
+    p = Product(name="", price=-10, quantity=99999, sku="invalid")
+except Exception as e:
+    print(e)
+```
+
+常用的 Field 限制：
+
+| 參數 | 說明 | 適用型別 |
+|------|------|----------|
+| `min_length` / `max_length` | 字串長度限制 | `str` |
+| `gt` / `ge` | 大於 / 大於等於 | `int`, `float` |
+| `lt` / `le` | 小於 / 小於等於 | `int`, `float` |
+| `pattern` | 正規表達式驗證 | `str` |
+| `default` | 預設值 | 所有型別 |
+| `description` | 欄位說明（會出現在 API 文件） | 所有型別 |
+| `alias` | 欄位別名（接收不同名稱的 key） | 所有型別 |
+
+---
+
+### validator：自訂驗證邏輯
+
+當內建的限制不夠用時，用 `@field_validator` 寫自訂驗證：
+
+```python
+from pydantic import BaseModel, field_validator
+
+class User(BaseModel):
+    name: str
+    age: int
+    email: str
+
+    @field_validator("age")
+    @classmethod
+    def age_must_be_adult(cls, v):
+        if v < 18:
+            raise ValueError("必須年滿 18 歲")
+        return v
+
+    @field_validator("email")
+    @classmethod
+    def email_must_have_at(cls, v):
+        if "@" not in v:
+            raise ValueError("Email 格式不正確")
+        return v.lower()  # 順便轉小寫
+
+# 測試
+try:
+    u = User(name="Alice", age=16, email="alice@example.com")
+except Exception as e:
+    print(e)  # age: 必須年滿 18 歲
+
+u2 = User(name="Bob", age=25, email="BOB@EXAMPLE.COM")
+print(u2.email)  # bob@example.com（自動轉小寫）
+```
+
+---
+
+### model_validator：跨欄位驗證
+
+需要同時看多個欄位才能驗證時用 `@model_validator`：
+
+```python
+from pydantic import BaseModel, model_validator
+
+class DateRange(BaseModel):
+    start_date: str
+    end_date: str
+
+    @model_validator(mode="after")
+    def check_date_order(self):
+        if self.start_date >= self.end_date:
+            raise ValueError("start_date 必須早於 end_date")
+        return self
+
+# 測試
+try:
+    r = DateRange(start_date="2026-05-10", end_date="2026-05-01")
+except Exception as e:
+    print(e)  # start_date 必須早於 end_date
+```
+
+---
+
+### 序列化：轉成 dict 和 JSON
+
+```python
+from pydantic import BaseModel
+
+class User(BaseModel):
+    name: str
+    age: int
+    email: str
+
+user = User(name="Alice", age=25, email="alice@example.com")
+
+# 轉成 dict
+user_dict = user.model_dump()
+print(user_dict)
+# {"name": "Alice", "age": 25, "email": "alice@example.com"}
+
+# 轉成 JSON 字串
+user_json = user.model_dump_json()
+print(user_json)
+# '{"name":"Alice","age":25,"email":"alice@example.com"}'
+
+# 排除特定欄位
+user.model_dump(exclude={"email"})
+# {"name": "Alice", "age": 25}
+
+# 只包含特定欄位
+user.model_dump(include={"name", "age"})
+# {"name": "Alice", "age": 25}
+```
+
+---
+
+### 從 dict / JSON 建立 Model
+
+```python
+from pydantic import BaseModel
+
+class User(BaseModel):
+    name: str
+    age: int
+
+# 從 dict 建立
+data = {"name": "Alice", "age": 25}
+user = User.model_validate(data)
+
+# 從 JSON 字串建立
+json_str = '{"name": "Bob", "age": 30}'
+user2 = User.model_validate_json(json_str)
+
+print(user.name)   # Alice
+print(user2.name)  # Bob
+```
+
+---
+
+### 在 FastAPI 裡的應用
+
+Pydantic 和 FastAPI 是天生一對，FastAPI 用 Pydantic model 來：
+1. 驗證 request body
+2. 自動產生 API 文件（Swagger UI）
+3. 序列化 response
+
+```python
+from fastapi import FastAPI
+from pydantic import BaseModel, Field
+from typing import Optional
+
+app = FastAPI()
+
+# Request model（接收前端傳來的資料）
+class CreateUserRequest(BaseModel):
+    name: str = Field(min_length=1, max_length=50)
+    age: int = Field(ge=0, le=150)
+    email: str
+
+# Response model（回傳給前端的資料）
+class UserResponse(BaseModel):
+    id: int
+    name: str
+    email: str
+    # 注意：不包含 age，不想讓前端看到
+
+@app.post("/users", response_model=UserResponse)
+async def create_user(user: CreateUserRequest):
+    # FastAPI 自動驗證 request body，不合法直接回 422
+    # user 已經是驗證過的 Pydantic model
+    new_user = save_to_db(user)  # 假設這個函式存到 DB 並回傳含 id 的資料
+    return UserResponse(id=new_user.id, name=user.name, email=user.email)
+```
+
+---
+
+### Pydantic v1 vs v2 差異
+
+Pydantic v2（2023 年後）有些語法改變，常見的：
+
+| 功能 | v1 寫法 | v2 寫法 |
+|------|---------|---------|
+| 轉成 dict | `.dict()` | `.model_dump()` |
+| 轉成 JSON | `.json()` | `.model_dump_json()` |
+| 從 dict 建立 | `.parse_obj()` | `.model_validate()` |
+| 從 JSON 建立 | `.parse_raw()` | `.model_validate_json()` |
+| 欄位驗證器 | `@validator` | `@field_validator` |
+| Model 驗證器 | `@root_validator` | `@model_validator` |
+
+> FastAPI 0.100+ 預設使用 Pydantic v2，新專案直接用 v2 語法就好。
+
+---
+
+### 重點整理
+
+- `BaseModel` 是核心，繼承它來定義資料結構
+- Pydantic 會自動做**型別轉換**（`"30"` → `30`）和**驗證**
+- `Optional[str] = None` 表示欄位可以是 None
+- `Field(gt=0, min_length=1)` 加上細部限制
+- `@field_validator` 寫自訂驗證邏輯
+- `.model_dump()` 轉 dict，`.model_dump_json()` 轉 JSON 字串
+- FastAPI 裡用 Pydantic model 當 request/response 型別，自動驗證 + 產生文件

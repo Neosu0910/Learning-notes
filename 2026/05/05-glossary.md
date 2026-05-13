@@ -980,3 +980,559 @@ RUN ln -sf /dev/stdout /var/log/nginx/access.log \
 # 這樣 nginx 的 log 會直接輸出到 container 的 stdout/stderr
 # Docker 和 CloudWatch 就能收集到這些 log
 ```
+
+## 0511
+
+**CD Pipeline（持續部署管線）**
+
+CD 是 Continuous Delivery（持續交付）或 Continuous Deployment（持續部署）的縮寫，Pipeline 是「管線」，整體意思是：把程式碼從寫好到上線的過程，自動化成一條流水線，每個步驟依序執行，確保每次部署都是可重複、可靠的。
+
+**CI vs CD 的區別：**
+- **CI（Continuous Integration，持續整合）**：開發者每次 push 程式碼，自動跑測試、建置，確保程式碼沒有問題
+- **CD（Continuous Delivery）**：在 CI 之後，自動把程式碼打包、部署到測試環境，但上 production 需要人工確認
+- **CD（Continuous Deployment）**：更進一步，連 production 也自動部署，完全不需要人工介入
+
+**一條典型的 CD Pipeline 長這樣：**
+```
+程式碼 push → CI 測試通過 → 建置 Docker Image → 推送到 Registry
+    → 部署到 Staging 環境 → 自動化測試 → 部署到 Production
+```
+
+**GitHub Actions 範例（CI/CD Pipeline）：**
+```yaml
+# .github/workflows/deploy.yml
+name: CI/CD Pipeline
+
+on:
+  push:
+    branches: [main]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v3
+      - name: Run tests
+        run: |
+          pip install -r requirements.txt
+          pytest tests/
+
+  build-and-push:
+    needs: test          # 測試通過才執行
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v3
+      - name: Build Docker image
+        run: docker build -t my-app:${{ github.sha }} .
+      - name: Push to ECR
+        run: |
+          aws ecr get-login-password | docker login --username AWS --password-stdin $ECR_REGISTRY
+          docker push $ECR_REGISTRY/my-app:${{ github.sha }}
+
+  deploy-staging:
+    needs: build-and-push
+    runs-on: ubuntu-latest
+    steps:
+      - name: Deploy to ECS Staging
+        run: |
+          aws ecs update-service \
+            --cluster staging \
+            --service my-app \
+            --force-new-deployment
+
+  deploy-production:
+    needs: deploy-staging
+    runs-on: ubuntu-latest
+    environment: production   # 需要人工在 GitHub 上按確認（Continuous Delivery）
+    steps:
+      - name: Deploy to ECS Production
+        run: |
+          aws ecs update-service \
+            --cluster production \
+            --service my-app \
+            --force-new-deployment
+```
+
+**在 AWS 上的 CD 工具：**
+| 工具 | 說明 |
+|------|------|
+| AWS CodePipeline | AWS 原生的 Pipeline 服務，串接 CodeBuild、CodeDeploy |
+| AWS CodeBuild | 執行建置和測試的服務（類似 GitHub Actions 的 runner）|
+| AWS CodeDeploy | 負責把程式碼部署到 EC2、ECS、Lambda |
+| GitHub Actions + AWS | 最常見的組合，用 GitHub Actions 跑 CI，部署到 AWS |
+
+**CD Pipeline 的核心價值：**
+- **速度**：從 commit 到上線可以縮短到幾分鐘
+- **一致性**：每次部署步驟完全相同，不會有「在我電腦上可以跑」的問題
+- **可回溯**：每個版本都有對應的 artifact，出問題可以快速 rollback
+- **信心**：自動化測試確保每次部署前程式碼是健康的
+
+---
+
+**抽象化（Abstraction）**
+
+抽象化是把「不同事物的共同本質」提取出來，忽略不重要的細節，只保留關鍵的概念。就像你說的例子：一個蘋果加一個蘋果、一個橘子加一個橘子，都可以用 `1 + 1 = 2` 來描述——這就是抽象化，把具體的「蘋果」和「橘子」抽象成「數字」。
+
+**為什麼需要抽象化：**
+現實世界太複雜，如果每次都要處理所有細節，人腦和程式都會不堪負荷。抽象化讓我們可以在不同層次思考問題，每一層只關心自己那層的事。
+
+**抽象化的層次（以電腦為例）：**
+```
+你寫的 Python 程式
+    ↓ 抽象
+Python 直譯器（把 Python 翻成機器碼）
+    ↓ 抽象
+作業系統（管理記憶體、檔案、進程）
+    ↓ 抽象
+CPU 指令集（x86、ARM）
+    ↓ 抽象
+電晶體（0 和 1）
+```
+每一層都不需要知道下面那層的細節，只需要透過定義好的介面溝通。
+
+**程式設計中的抽象化：**
+
+```python
+# 沒有抽象化：每次都要處理細節
+# 計算圓面積
+circle_area = 3.14159 * 5 * 5
+# 計算另一個圓
+circle_area2 = 3.14159 * 10 * 10
+
+# 有抽象化：把「計算圓面積」這個概念抽象成函式
+import math
+
+def circle_area(radius):
+    return math.pi * radius ** 2
+
+# 使用者不需要知道 π 是多少，只需要知道「給半徑，得面積」
+print(circle_area(5))   # 78.53...
+print(circle_area(10))  # 314.15...
+```
+
+```python
+# 更高層的抽象：把「形狀」抽象成一個概念
+from abc import ABC, abstractmethod
+
+class Shape(ABC):
+    @abstractmethod
+    def area(self) -> float:
+        pass
+
+    @abstractmethod
+    def perimeter(self) -> float:
+        pass
+
+class Circle(Shape):
+    def __init__(self, radius):
+        self.radius = radius
+
+    def area(self):
+        return math.pi * self.radius ** 2
+
+    def perimeter(self):
+        return 2 * math.pi * self.radius
+
+class Rectangle(Shape):
+    def __init__(self, width, height):
+        self.width = width
+        self.height = height
+
+    def area(self):
+        return self.width * self.height
+
+    def perimeter(self):
+        return 2 * (self.width + self.height)
+
+# 使用者只需要知道「形狀有面積和周長」，不需要知道各自怎麼算
+shapes = [Circle(5), Rectangle(4, 6), Circle(3)]
+for shape in shapes:
+    print(f"面積：{shape.area():.2f}")  # 統一介面，不管是哪種形狀
+```
+
+**在 AWS 架構中的抽象化：**
+- **S3**：把「儲存」抽象化，你不需要知道資料存在哪台硬碟、哪個機房
+- **Lambda**：把「執行程式碼」抽象化，你不需要管伺服器、OS、記憶體分配
+- **RDS**：把「資料庫管理」抽象化，備份、patch、failover 都幫你處理
+
+**抽象化的好處：**
+| 好處 | 說明 |
+|------|------|
+| 降低複雜度 | 每次只需要思考當前層次的問題 |
+| 可重用性 | 抽象出來的概念可以在不同地方使用 |
+| 可替換性 | 底層實作可以換掉，上層不受影響 |
+| 可讀性 | 程式碼更接近人類語言，更容易理解 |
+
+**抽象化的代價：**
+抽象化不是免費的，每一層抽象都有效能開銷（overhead）。過度抽象會讓程式碼難以理解和除錯。好的抽象是「剛好夠用」，不多也不少。
+
+---
+
+**建立假設與驗證假設的 SOP**
+
+這是一套系統性的思考框架，讓你在面對任何問題時，都能有條理地從「觀察現象」到「得出結論」，而不是憑感覺亂猜。這套方法來自科學方法論，但在工程、產品、甚至日常決策中都非常實用。
+
+**核心流程：**
+```
+描述事實（觀察）
+    ↓
+建立 Baseline（現況基準）
+    ↓
+提出假設（可能的原因或解法）
+    ↓
+設計實驗（如何驗證）
+    ↓
+執行並收集數據
+    ↓
+分析結果（假設成立 or 推翻）
+    ↓
+得出結論 / 調整假設
+```
+
+**每個步驟的說明：**
+
+**1. 描述事實（不加主觀判斷）**
+只描述你觀察到的現象，不要加入推測或情緒。
+
+```
+❌ 不好的描述：「系統很慢，一定是資料庫的問題」
+✓ 好的描述：「API /orders 的 P99 延遲從昨天的 200ms 上升到今天的 1500ms，
+             發生時間從 14:00 開始，影響約 30% 的請求」
+```
+
+**2. 建立 Baseline（問題的基準線）**
+Baseline 是「正常狀態應該是什麼」，有了 baseline 才能判斷現在是否異常，以及改善了多少。
+
+```python
+# 工程上的 Baseline 範例：效能測試前先建立基準
+import time
+import statistics
+
+def measure_baseline(func, iterations=100):
+    """測量函式的基準效能"""
+    times = []
+    for _ in range(iterations):
+        start = time.perf_counter()
+        func()
+        end = time.perf_counter()
+        times.append(end - start)
+
+    return {
+        "mean": statistics.mean(times),
+        "median": statistics.median(times),
+        "p95": sorted(times)[int(len(times) * 0.95)],
+        "p99": sorted(times)[int(len(times) * 0.99)],
+    }
+
+# 先建立 baseline，再做優化，才能知道優化了多少
+baseline = measure_baseline(my_function)
+print(f"Baseline P99: {baseline['p99'] * 1000:.2f}ms")
+
+# 做了某個優化後
+after_optimization = measure_baseline(my_optimized_function)
+print(f"After P99: {after_optimization['p99'] * 1000:.2f}ms")
+improvement = (baseline['p99'] - after_optimization['p99']) / baseline['p99'] * 100
+print(f"改善了 {improvement:.1f}%")
+```
+
+**3. 提出假設（要可被驗證）**
+好的假設必須是「可以被證明是錯的」（falsifiable），否則不是假設，是信仰。
+
+```
+❌ 不好的假設：「系統可能有問題」（太模糊，無法驗證）
+✓ 好的假設：「14:00 部署的新版本引入了 N+1 query 問題，
+             導致每個 /orders 請求多發了約 50 次 DB 查詢」
+```
+
+**4. 設計實驗（控制變因）**
+每次只改一個變因，這樣才能確定是哪個因素造成差異。
+
+```bash
+# 例：驗證「是否是新版本造成的」
+# 實驗：把流量切回舊版本，看延遲是否恢復
+
+# 用 AWS ALB 做 A/B 測試，10% 流量給舊版本
+aws elbv2 modify-rule \
+  --rule-arn arn:aws:elasticloadbalancing:... \
+  --actions '[
+    {"Type": "forward", "ForwardConfig": {
+      "TargetGroups": [
+        {"TargetGroupArn": "arn:...old-version", "Weight": 10},
+        {"TargetGroupArn": "arn:...new-version", "Weight": 90}
+      ]
+    }}
+  ]'
+```
+
+**5. 分析結果**
+用數據說話，不要用感覺。
+
+```python
+# 用 CloudWatch 查詢實驗前後的延遲數據
+import boto3
+from datetime import datetime, timedelta
+
+cloudwatch = boto3.client("cloudwatch")
+
+def get_p99_latency(start_time, end_time, service_version):
+    response = cloudwatch.get_metric_statistics(
+        Namespace="MyApp",
+        MetricName="APILatency",
+        Dimensions=[{"Name": "Version", "Value": service_version}],
+        StartTime=start_time,
+        EndTime=end_time,
+        Period=300,
+        Statistics=["p99"],
+        ExtendedStatistics=["p99"]
+    )
+    return response["Datapoints"]
+
+# 比較新舊版本的 P99 延遲
+old_latency = get_p99_latency(start, end, "v1.2.3")
+new_latency = get_p99_latency(start, end, "v1.2.4")
+# 如果舊版本 P99 = 200ms，新版本 P99 = 1500ms → 假設成立
+```
+
+**這套 SOP 的實際應用場景：**
+
+| 場景 | 事實描述 | Baseline | 假設 | 驗證方式 |
+|------|---------|----------|------|---------|
+| 效能問題 | API 延遲從 200ms 升到 1500ms | 過去 7 天 P99 = 200ms | 新版本引入 N+1 query | rollback 看延遲是否恢復 |
+| 功能開發 | 用戶結帳流失率 60% | 業界平均 20% | 結帳步驟太多導致放棄 | A/B 測試簡化版結帳流程 |
+| 學習新技術 | 不知道 async 是否真的更快 | 同步版本跑 100 個請求需 30 秒 | async 版本應該快 3-5 倍 | 實際跑 benchmark 比較 |
+
+**為什麼這套 SOP 重要：**
+- 避免「確認偏誤」：先有結論再找證據的陷阱
+- 讓溝通更有效率：跟別人討論時，大家都在同一個框架下思考
+- 累積可複用的知識：每次驗證的結果都是下次的 baseline 和參考
+- 在不確定的情況下做出有根據的決策，而不是靠直覺賭博
+
+
+---
+
+**Terraform Variables 與 Outputs**
+
+Terraform 是 Infrastructure as Code（IaC）工具，讓你用程式碼描述並管理雲端資源。Variables 和 Outputs 是讓 Terraform 設定檔可重用、可組合的核心機制。
+
+**Variables（輸入變數）**
+
+Variables 就像函式的參數，讓你把「會變動的值」從設定檔裡抽出來，不同環境（dev/staging/prod）可以傳入不同的值，而不用改程式碼本身。
+
+宣告方式：
+```hcl
+# variables.tf
+variable "instance_type" {
+  description = "EC2 instance 的規格"
+  type        = string
+  default     = "t3.micro"   # 有 default 就不一定要傳值
+}
+
+variable "environment" {
+  description = "部署環境"
+  type        = string
+  # 沒有 default，執行時必須提供
+}
+
+variable "allowed_ports" {
+  description = "允許的 port 清單"
+  type        = list(number)
+  default     = [80, 443]
+}
+```
+
+使用方式（在 resource 裡用 `var.` 引用）：
+```hcl
+# main.tf
+resource "aws_instance" "web" {
+  ami           = "ami-0c55b159cbfafe1f0"
+  instance_type = var.instance_type   # 引用 variable
+
+  tags = {
+    Environment = var.environment
+  }
+}
+```
+
+傳入變數的三種方式：
+```bash
+# 方法一：執行時用 -var 旗標
+terraform apply -var="environment=prod" -var="instance_type=t3.small"
+
+# 方法二：用 .tfvars 檔案（推薦，可以 git 管理）
+# terraform.tfvars
+environment   = "prod"
+instance_type = "t3.small"
+
+terraform apply  # 自動讀取 terraform.tfvars
+
+# 方法三：環境變數（前綴 TF_VAR_）
+export TF_VAR_environment="prod"
+terraform apply
+```
+
+**Outputs（輸出值）**
+
+Outputs 讓你在 `terraform apply` 完成後，把重要的資源資訊印出來，或是讓其他 Terraform module 引用。就像函式的 return value。
+
+宣告方式：
+```hcl
+# outputs.tf
+output "instance_public_ip" {
+  description = "EC2 instance 的 public IP"
+  value       = aws_instance.web.public_ip
+}
+
+output "instance_id" {
+  description = "EC2 instance ID"
+  value       = aws_instance.web.id
+}
+
+output "db_endpoint" {
+  description = "RDS 資料庫的連線端點"
+  value       = aws_db_instance.main.endpoint
+  sensitive   = true   # 敏感資訊，不會直接印在 terminal 上
+}
+```
+
+執行後的輸出：
+```bash
+terraform apply
+# ...（建立資源）...
+# Outputs:
+# instance_public_ip = "54.123.45.67"
+# instance_id        = "i-0abc123def456"
+# db_endpoint        = <sensitive>
+
+# 事後也可以單獨查詢
+terraform output
+terraform output instance_public_ip   # 只查某一個
+terraform output -json                # 輸出成 JSON 格式（方便給其他程式用）
+```
+
+**Variables 與 Outputs 的關係：**
+```
+外部（.tfvars / CLI / 環境變數）
+        ↓  Variables（輸入）
+   Terraform 設定檔（main.tf）
+        ↓  Outputs（輸出）
+   terminal 顯示 / 其他 module 引用
+```
+
+**在 Module 之間傳遞資料：**
+Outputs 最重要的用途之一是讓 parent module 取得 child module 建立的資源資訊：
+```hcl
+# modules/network/outputs.tf
+output "vpc_id" {
+  value = aws_vpc.main.id
+}
+
+# main.tf（parent module）
+module "network" {
+  source = "./modules/network"
+}
+
+module "compute" {
+  source = "./modules/compute"
+  vpc_id = module.network.vpc_id   # 用 module.<name>.<output> 引用
+}
+```
+
+**實際情境（AWS 架構）：**
+```hcl
+# 建立 S3 bucket，output bucket name 給 CI/CD pipeline 用
+resource "aws_s3_bucket" "artifacts" {
+  bucket = "my-app-artifacts-${var.environment}"
+}
+
+output "artifact_bucket_name" {
+  value = aws_s3_bucket.artifacts.bucket
+}
+
+# CI/CD pipeline 執行：
+# terraform output -raw artifact_bucket_name
+# → my-app-artifacts-prod
+# 然後把這個值傳給 GitHub Actions 做後續部署
+```
+
+---
+
+**Terraform Import**
+
+`terraform import` 解決一個常見問題：**已經在 AWS Console 手動建立的資源，如何納入 Terraform 管理？**
+
+如果不 import，Terraform 不知道這個資源存在，下次執行 `terraform apply` 可能會嘗試重複建立，或是在 `terraform destroy` 時漏掉它。
+
+**運作原理：**
+```
+AWS 上已存在的資源（例如手動建立的 EC2）
+        ↓  terraform import
+   Terraform state file（.tfstate）
+        ↓  之後的 plan/apply/destroy
+   Terraform 正常管理這個資源
+```
+
+Import 只是把資源的「現況」寫進 state file，**不會自動產生 .tf 設定檔**，你還需要自己補寫對應的 resource block。
+
+**方法一：CLI 指令（傳統方式）**
+```bash
+# 語法：terraform import <resource_type>.<resource_name> <resource_id>
+
+# 匯入一台已存在的 EC2 instance
+terraform import aws_instance.web i-0abc123def456789
+
+# 匯入一個 S3 bucket
+terraform import aws_s3_bucket.my_bucket my-existing-bucket-name
+
+# 匯入 Security Group
+terraform import aws_security_group.allow_http sg-0123456789abcdef0
+```
+
+執行前，你必須先在 .tf 檔案裡寫好對應的 resource block（即使是空的）：
+```hcl
+# main.tf（先寫好這個，才能 import）
+resource "aws_instance" "web" {
+  # 先留空，import 後再補齊屬性
+}
+```
+
+Import 完成後，用 `terraform show` 查看 state，再把屬性補回 .tf 檔：
+```bash
+terraform show   # 查看 state 裡的資源詳情
+terraform plan   # 確認 plan 沒有 diff（代表 .tf 和實際狀態一致）
+```
+
+**方法二：Import Block（Terraform 1.5+ 新方式，推薦）**
+```hcl
+# import.tf
+import {
+  to = aws_instance.web
+  id = "i-0abc123def456789"
+}
+
+resource "aws_instance" "web" {
+  ami           = "ami-0c55b159cbfafe1f0"
+  instance_type = "t3.micro"
+  # ... 其他屬性
+}
+```
+
+```bash
+terraform plan    # 先預覽，確認 import 的內容正確
+terraform apply   # 執行 import
+```
+
+Import Block 的優點是可以 code review、可以 plan 預覽，比 CLI 指令更安全。
+
+**常見使用情境：**
+| 情境 | 說明 |
+|------|------|
+| 接手舊專案 | 前人手動建的資源，現在要用 Terraform 統一管理 |
+| 補救手動操作 | 緊急時在 Console 手動建了資源，事後補 import |
+| 遷移到 Terraform | 原本用其他工具（CloudFormation、Pulumi）管理，要換成 Terraform |
+
+**Import 的限制：**
+- 一次只能 import 一個資源（CLI 方式）
+- 不是所有資源都支援 import（要查 provider 文件）
+- Import 後 .tf 設定檔要自己補寫，否則下次 plan 會顯示 diff
+
+**參考資料：** [Terraform 基礎 - 變數 Variables 與輸出 Outputs](https://medium.com/@minghunghsieh/day-11-terraform%E5%9F%BA%E7%A4%8E-%E8%AE%8A%E6%95%B8-variables-%E8%88%87%E8%BC%B8%E5%87%BA-outputs-50e09e793bb7)（Content was rephrased for compliance with licensing restrictions）
