@@ -3413,3 +3413,608 @@ location /stream {
 - 需要伺服器保持長連線，高並發時要注意資源消耗
 
 ---
+
+## 0517
+
+**Integration Test（整合測試）**
+
+整合測試是在「單元測試」之上的一層測試，目的是驗證多個元件**組合在一起**時能否正確運作。單元測試只測一個函式或類別，整合測試則測「這個 API endpoint 呼叫資料庫、呼叫外部服務，整個流程跑起來是否正確」。
+
+**測試金字塔：**
+```
+        /\
+       /  \
+      / E2E \        ← 最少，最慢，最貴（模擬真實使用者）
+     /--------\
+    / Integration\   ← 中間層，測元件之間的協作
+   /--------------\
+  /   Unit Tests   \ ← 最多，最快，最便宜（測單一函式）
+ /------------------\
+```
+
+**單元測試 vs 整合測試的差別：**
+
+| | 單元測試 | 整合測試 |
+|--|---------|---------|
+| 測試範圍 | 單一函式/類別 | 多個元件協作 |
+| 外部依賴 | 全部 mock 掉 | 使用真實或接近真實的依賴 |
+| 速度 | 非常快（毫秒）| 較慢（秒級）|
+| 目的 | 邏輯正確性 | 元件間介面正確性 |
+
+**FastAPI 整合測試範例：**
+```python
+# tests/test_integration.py
+import pytest
+from fastapi.testclient import TestClient
+from sqlalchemy import create_engine
+from sqlalchemy.orm import sessionmaker
+
+from app.main import app
+from app.database import get_db, Base
+
+# 使用測試用的 SQLite 資料庫（不影響正式資料）
+TEST_DATABASE_URL = "sqlite:///./test.db"
+engine = create_engine(TEST_DATABASE_URL)
+TestingSessionLocal = sessionmaker(bind=engine)
+
+# 覆蓋 dependency，讓 app 使用測試資料庫
+def override_get_db():
+    db = TestingSessionLocal()
+    try:
+        yield db
+    finally:
+        db.close()
+
+app.dependency_overrides[get_db] = override_get_db
+
+@pytest.fixture(autouse=True)
+def setup_db():
+    Base.metadata.create_all(bind=engine)   # 建立資料表
+    yield
+    Base.metadata.drop_all(bind=engine)     # 測試後清除
+
+client = TestClient(app)
+
+def test_create_and_get_user():
+    # 整合測試：測試「建立用戶」→「查詢用戶」整個流程
+    # 1. 建立用戶
+    response = client.post("/users", json={"name": "Neo", "email": "neo@example.com"})
+    assert response.status_code == 201
+    user_id = response.json()["id"]
+
+    # 2. 查詢剛建立的用戶（測試資料庫寫入是否成功）
+    response = client.get(f"/users/{user_id}")
+    assert response.status_code == 200
+    assert response.json()["name"] == "Neo"
+```
+
+**整合測試的策略：**
+- 使用 in-memory 資料庫（SQLite）或 Docker 起一個測試用的 PostgreSQL
+- 每個測試前後清空資料，確保測試之間互不影響
+- 不需要 mock 所有東西，但外部 API（第三方服務）通常還是要 mock
+
+---
+
+**FastAPI TestClient 的用法**
+
+`TestClient` 是 FastAPI（底層用 Starlette）提供的測試工具，讓你在不啟動真實 HTTP server 的情況下，直接對 FastAPI app 發送請求，用於撰寫整合測試。
+
+**底層原理：**
+TestClient 使用 `httpx` 或 `requests` 的 transport 層，直接把請求送進 ASGI app，繞過網路層，所以速度很快，也不需要佔用 port。
+
+**基本用法：**
+```python
+from fastapi import FastAPI
+from fastapi.testclient import TestClient
+
+app = FastAPI()
+
+@app.get("/hello")
+def hello(name: str = "World"):
+    return {"message": f"Hello, {name}!"}
+
+@app.post("/items")
+def create_item(item: dict):
+    return {"id": 1, **item}
+
+# 建立 TestClient
+client = TestClient(app)
+
+def test_hello():
+    response = client.get("/hello")
+    assert response.status_code == 200
+    assert response.json() == {"message": "Hello, World!"}
+
+def test_hello_with_name():
+    response = client.get("/hello", params={"name": "Neo"})
+    assert response.json() == {"message": "Hello, Neo!"}
+
+def test_create_item():
+    response = client.post("/items", json={"name": "book", "price": 99})
+    assert response.status_code == 200
+    assert response.json()["name"] == "book"
+```
+
+**測試需要認證的 endpoint：**
+```python
+def test_protected_endpoint():
+    # 帶上 Authorization header
+    response = client.get(
+        "/protected",
+        headers={"Authorization": "Bearer my-test-token"}
+    )
+    assert response.status_code == 200
+```
+
+**測試非同步 endpoint（async def）：**
+TestClient 內部會自動處理 async，你不需要在測試裡用 `await`，直接呼叫就好：
+```python
+@app.get("/async-data")
+async def get_async_data():
+    # 即使是 async endpoint，TestClient 也能直接測
+    return {"data": "async result"}
+
+def test_async_endpoint():
+    response = client.get("/async-data")   # 不需要 await
+    assert response.status_code == 200
+```
+
+**用 pytest fixture 管理 client 生命週期：**
+```python
+import pytest
+from fastapi.testclient import TestClient
+from app.main import app
+
+@pytest.fixture
+def client():
+    with TestClient(app) as c:
+        yield c   # 使用 context manager 確保 lifespan 事件（startup/shutdown）被觸發
+
+def test_something(client):
+    response = client.get("/")
+    assert response.status_code == 200
+```
+
+---
+
+**MockWorkflow 的概念**
+
+MockWorkflow 是一種測試設計模式，在整合測試或單元測試中，用一個「假的工作流程實作」來替換真實的工作流程，讓測試可以在不依賴外部系統（資料庫、第三方 API、訊息佇列）的情況下驗證業務邏輯。
+
+**為什麼需要 MockWorkflow：**
+真實的 Workflow 可能會：
+- 呼叫外部 API（慢、不穩定、有費用）
+- 寫入資料庫（需要清理、可能影響其他測試）
+- 觸發非同步任務（難以在測試中等待結果）
+
+MockWorkflow 把這些副作用全部替換成可預測的假行為。
+
+**實作範例：**
+```python
+# app/workflows/order_workflow.py
+class OrderWorkflow:
+    async def process_payment(self, order_id: str, amount: float) -> dict:
+        # 真實實作：呼叫金流 API
+        result = await payment_gateway.charge(order_id, amount)
+        return result
+
+    async def send_confirmation_email(self, email: str, order_id: str):
+        # 真實實作：呼叫 SES 發信
+        await ses_client.send_email(email, f"訂單 {order_id} 確認")
+
+# tests/mocks/mock_order_workflow.py
+class MockOrderWorkflow:
+    def __init__(self):
+        self.processed_payments = []   # 記錄被呼叫的參數，方便斷言
+        self.sent_emails = []
+
+    async def process_payment(self, order_id: str, amount: float) -> dict:
+        # 假實作：直接回傳成功，不呼叫真實 API
+        self.processed_payments.append({"order_id": order_id, "amount": amount})
+        return {"status": "success", "transaction_id": "mock-txn-123"}
+
+    async def send_confirmation_email(self, email: str, order_id: str):
+        self.sent_emails.append({"email": email, "order_id": order_id})
+
+# tests/test_order_service.py
+import pytest
+from app.services.order_service import OrderService
+from tests.mocks.mock_order_workflow import MockOrderWorkflow
+
+@pytest.fixture
+def mock_workflow():
+    return MockOrderWorkflow()
+
+@pytest.fixture
+def order_service(mock_workflow):
+    return OrderService(workflow=mock_workflow)   # 注入 mock
+
+async def test_place_order(order_service, mock_workflow):
+    await order_service.place_order(
+        order_id="order-001",
+        amount=500.0,
+        email="user@example.com"
+    )
+
+    # 驗證 workflow 被正確呼叫
+    assert len(mock_workflow.processed_payments) == 1
+    assert mock_workflow.processed_payments[0]["amount"] == 500.0
+    assert mock_workflow.sent_emails[0]["email"] == "user@example.com"
+```
+
+**`workflow_mode=mock/integration` 的設計：**
+有些系統會用環境變數或設定來切換 workflow 模式：
+```python
+import os
+from app.workflows.order_workflow import OrderWorkflow
+from tests.mocks.mock_order_workflow import MockOrderWorkflow
+
+def get_workflow():
+    mode = os.getenv("WORKFLOW_MODE", "integration")
+    if mode == "mock":
+        return MockOrderWorkflow()
+    return OrderWorkflow()
+
+# 測試時設定環境變數
+# WORKFLOW_MODE=mock pytest tests/
+```
+
+---
+
+**pytest、asyncio、AsyncMock**
+
+這三個工具組合在一起，是 Python 非同步程式碼測試的標準配備。
+
+**pytest**
+Python 最主流的測試框架，提供 fixture、參數化測試、豐富的 assert 訊息等功能。
+
+```bash
+pip install pytest pytest-asyncio
+```
+
+**pytest-asyncio**
+讓 pytest 能夠執行 `async def` 的測試函式。
+
+```python
+# pytest.ini 或 pyproject.toml 設定
+[pytest]
+asyncio_mode = auto   # 自動把所有 async test 當成 asyncio 測試
+
+# 或是在每個測試加裝飾器
+import pytest
+
+@pytest.mark.asyncio
+async def test_async_function():
+    result = await some_async_function()
+    assert result == "expected"
+```
+
+**AsyncMock**
+`unittest.mock.AsyncMock` 是 Python 3.8+ 內建的工具，用來 mock `async def` 函式。普通的 `Mock` 無法被 `await`，所以需要 `AsyncMock`。
+
+```python
+from unittest.mock import AsyncMock, patch
+import pytest
+
+# 被測試的函式
+async def fetch_user(user_id: str, http_client):
+    response = await http_client.get(f"/users/{user_id}")
+    return response.json()
+
+# 測試
+@pytest.mark.asyncio
+async def test_fetch_user():
+    # 建立 AsyncMock
+    mock_client = AsyncMock()
+    mock_client.get.return_value.json.return_value = {"id": "123", "name": "Neo"}
+
+    result = await fetch_user("123", mock_client)
+
+    assert result["name"] == "Neo"
+    mock_client.get.assert_called_once_with("/users/123")   # 驗證呼叫參數
+```
+
+**用 `patch` 替換模組層級的 async 函式：**
+```python
+from unittest.mock import patch, AsyncMock
+
+@pytest.mark.asyncio
+async def test_with_patch():
+    with patch("app.services.send_email", new_callable=AsyncMock) as mock_send:
+        mock_send.return_value = {"status": "sent"}
+
+        await some_service_that_calls_send_email()
+
+        mock_send.assert_called_once()
+```
+
+**AsyncMock 的常用屬性：**
+```python
+mock = AsyncMock()
+
+# 設定回傳值
+mock.return_value = "result"
+
+# 設定拋出例外
+mock.side_effect = ValueError("something went wrong")
+
+# 設定每次呼叫回傳不同值
+mock.side_effect = ["first", "second", "third"]
+
+# 驗證呼叫次數
+mock.assert_called_once()
+mock.assert_called_with("arg1", key="value")
+print(mock.call_count)   # 被呼叫幾次
+```
+
+---
+
+**Optimistic Locking（樂觀鎖）**
+
+樂觀鎖是一種並發控制策略，假設「大多數情況下不會發生衝突」，所以讀取資料時不加鎖，只在**寫入時才檢查資料是否被別人改過**。如果發現衝突，就拒絕這次更新，讓呼叫方重試。
+
+**與悲觀鎖（Pessimistic Locking）的對比：**
+
+| | 樂觀鎖 | 悲觀鎖 |
+|--|--------|--------|
+| 假設 | 衝突很少發生 | 衝突很常發生 |
+| 鎖定時機 | 寫入時才檢查 | 讀取時就鎖定 |
+| 實作方式 | version 欄位或 timestamp | `SELECT FOR UPDATE` |
+| 效能 | 高（無鎖讀取）| 較低（持有鎖期間其他人等待）|
+| 適合場景 | 讀多寫少 | 寫衝突頻繁 |
+
+**實作原理（version 欄位）：**
+```sql
+-- 資料表加一個 version 欄位
+CREATE TABLE products (
+    id      SERIAL PRIMARY KEY,
+    name    VARCHAR(100),
+    stock   INTEGER,
+    version INTEGER DEFAULT 0   -- 每次更新 +1
+);
+```
+
+```python
+# 讀取時記錄 version
+product = db.query("SELECT id, stock, version FROM products WHERE id = 1")
+# 得到：{id: 1, stock: 100, version: 5}
+
+# 更新時帶上 version，確保沒有人在這期間改過
+rows_affected = db.execute("""
+    UPDATE products
+    SET stock = :new_stock, version = version + 1
+    WHERE id = :id AND version = :expected_version
+""", {"new_stock": 99, "id": 1, "expected_version": 5})
+
+if rows_affected == 0:
+    # version 不符合，代表有人搶先更新了
+    raise OptimisticLockError("資料已被其他人修改，請重新讀取後再試")
+```
+
+**SQLAlchemy 的樂觀鎖實作：**
+```python
+from sqlalchemy import Column, Integer, String
+from sqlalchemy.orm import DeclarativeBase
+
+class Base(DeclarativeBase):
+    pass
+
+class Product(Base):
+    __tablename__ = "products"
+
+    id      = Column(Integer, primary_key=True)
+    name    = Column(String)
+    stock   = Column(Integer)
+    version = Column(Integer, default=0)
+
+    __mapper_args__ = {
+        "version_id_col": version   # 告訴 SQLAlchemy 用這個欄位做樂觀鎖
+    }
+
+# SQLAlchemy 會自動在 UPDATE 時加上 version 條件，並在衝突時拋出 StaleDataError
+from sqlalchemy.orm.exc import StaleDataError
+
+try:
+    product.stock -= 1
+    session.commit()
+except StaleDataError:
+    session.rollback()
+    # 重新讀取並重試
+```
+
+**使用情境：**
+- 電商庫存扣減（多人同時下單同一商品）
+- 文件協作編輯（多人同時編輯同一份文件）
+- 金融帳戶餘額更新
+
+---
+
+**EIG（Elastic IP Gateway / Egress-only Internet Gateway）**
+
+在 AWS 語境中，EIG 通常指 **Egress-Only Internet Gateway**，是專門為 **IPv6** 設計的閘道器，讓 VPC 內的資源可以**主動對外發起連線**，但外部無法主動連進來。
+
+**為什麼需要 Egress-Only Internet Gateway：**
+IPv4 的私有 IP 靠 NAT Gateway 來上網（NAT 本身就是單向的）。但 IPv6 沒有 NAT 的概念，每個資源都有公開的 IPv6 位址，如果直接用 Internet Gateway，外部就能主動連進來，有安全疑慮。Egress-Only IGW 解決了這個問題：允許出去，但擋掉外部進來的連線。
+
+**架構對比：**
+```
+IPv4 私有資源上網：
+  EC2 (private IPv4) → NAT Gateway → Internet Gateway → Internet
+
+IPv6 資源上網（只出不進）：
+  EC2 (IPv6) → Egress-Only Internet Gateway → Internet
+  Internet → Egress-Only IGW → ✗ 擋掉（無法主動連進來）
+```
+
+**設定方式：**
+```bash
+# 建立 Egress-Only Internet Gateway
+aws ec2 create-egress-only-internet-gateway \
+  --vpc-id vpc-xxxxxxxx
+
+# 在 route table 加上 IPv6 的出口路由
+aws ec2 create-route \
+  --route-table-id rtb-xxxxxxxx \
+  --destination-ipv6-cidr-block ::/0 \
+  --egress-only-internet-gateway-id eigw-xxxxxxxx
+```
+
+**與 NAT Gateway 的對比：**
+| | NAT Gateway | Egress-Only IGW |
+|--|-------------|-----------------|
+| 適用協定 | IPv4 | IPv6 |
+| 方向 | 出去（NAT 轉換）| 出去（無 NAT）|
+| 費用 | 有費用 | 免費 |
+| 外部能否主動連入 | 不行 | 不行 |
+
+---
+
+**traceparent（分散式追蹤標頭）**
+
+`traceparent` 是 W3C Trace Context 規範定義的 HTTP 標頭，用於在**分散式系統**中追蹤一個請求跨越多個服務的完整路徑。當一個請求從 Service A 呼叫 Service B 再呼叫 Service C，`traceparent` 讓你能把這三段日誌串在一起，看到完整的呼叫鏈。
+
+**格式：**
+```
+traceparent: {version}-{trace-id}-{parent-id}-{flags}
+
+例子：
+traceparent: 00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01
+
+- 00          : version（目前固定是 00）
+- 4bf92f3...  : trace-id（16 bytes，整個請求鏈的唯一 ID）
+- 00f067aa... : parent-id（8 bytes，當前這一段的 span ID）
+- 01          : flags（01 = 要採樣記錄，00 = 不採樣）
+```
+
+**運作方式：**
+```
+用戶請求
+    ↓
+Service A（產生 trace-id: abc123，span-id: 111）
+    ↓ 呼叫時帶上 traceparent: 00-abc123-111-01
+Service B（繼承 trace-id: abc123，產生新 span-id: 222）
+    ↓ 呼叫時帶上 traceparent: 00-abc123-222-01
+Service C（繼承 trace-id: abc123，產生新 span-id: 333）
+```
+
+所有服務都用同一個 `trace-id`，在 Jaeger、Zipkin、AWS X-Ray 等工具裡就能把這三段日誌串成一條完整的追蹤鏈。
+
+**Python 實作（用 opentelemetry）：**
+```python
+from opentelemetry import trace
+from opentelemetry.sdk.trace import TracerProvider
+from opentelemetry.sdk.trace.export import ConsoleSpanExporter, SimpleSpanProcessor
+from opentelemetry.propagate import inject, extract
+import httpx
+
+# 設定 tracer
+provider = TracerProvider()
+provider.add_span_processor(SimpleSpanProcessor(ConsoleSpanExporter()))
+trace.set_tracer_provider(provider)
+tracer = trace.get_tracer(__name__)
+
+# 發送請求時自動注入 traceparent
+async def call_downstream_service(url: str):
+    with tracer.start_as_current_span("call-downstream"):
+        headers = {}
+        inject(headers)   # 自動把 traceparent 加進 headers
+        async with httpx.AsyncClient() as client:
+            response = await client.get(url, headers=headers)
+        return response
+
+# 接收請求時提取 traceparent
+from fastapi import FastAPI, Request
+
+app = FastAPI()
+
+@app.get("/process")
+async def process(request: Request):
+    # 從 incoming request 提取 trace context
+    context = extract(dict(request.headers))
+    with tracer.start_as_current_span("process", context=context):
+        # 這個 span 會自動連結到上游的 trace
+        return {"status": "processed"}
+```
+
+**在 AWS 的對應：**
+- **AWS X-Ray**：AWS 的分散式追蹤服務，使用 `X-Amzn-Trace-Id` 標頭（概念相同，格式不同）
+- **AWS Distro for OpenTelemetry (ADOT)**：讓你用標準的 OpenTelemetry（包含 traceparent）把追蹤資料送到 X-Ray
+
+---
+
+**SubAgent 是什麼**
+
+SubAgent 是 AI Agent 系統中的一種架構模式。在一個複雜的 AI 任務中，主 Agent（Orchestrator）會把任務拆解成子任務，然後把每個子任務委派給專門的 SubAgent 去執行，最後再把結果彙整。
+
+**為什麼需要 SubAgent：**
+- 單一 Agent 的 context window 有限，複雜任務容易超出限制
+- 不同子任務可以平行執行，提升效率
+- 每個 SubAgent 可以專注在自己的領域（例如：一個負責寫程式碼、一個負責查文件、一個負責測試）
+
+**架構示意：**
+```
+用戶請求
+    ↓
+Orchestrator Agent（主 Agent）
+    ├── SubAgent A：負責需求分析
+    ├── SubAgent B：負責程式碼生成
+    ├── SubAgent C：負責測試撰寫
+    └── SubAgent D：負責文件生成
+    ↓
+彙整結果回傳給用戶
+```
+
+**與 MCP Gateway 的關係：**
+SubAgent 通常透過 MCP（Model Context Protocol）來存取工具和資源。MCP Gateway 是一個中間層，統一管理多個 MCP Server，讓 SubAgent 不需要直接連接每個工具，只需要透過 Gateway 就能存取所有工具。
+
+```
+SubAgent
+    ↓
+MCP Gateway（統一入口）
+    ├── MCP Server: 資料庫工具
+    ├── MCP Server: 檔案系統工具
+    ├── MCP Server: 網路搜尋工具
+    └── MCP Server: 程式碼執行工具
+```
+
+---
+
+**MCP Gateway 是什麼**
+
+MCP（Model Context Protocol）是 Anthropic 提出的開放協定，定義了 AI 模型如何與外部工具、資料來源互動的標準介面。MCP Gateway 則是在多個 MCP Server 前面的統一代理層。
+
+**MCP 的核心概念：**
+- **MCP Server**：提供特定工具或資源的服務（例如：一個 MCP Server 提供資料庫查詢工具）
+- **MCP Client**：AI Agent，透過 MCP 協定呼叫 MCP Server 的工具
+- **MCP Gateway**：聚合多個 MCP Server，提供統一的存取點、認證、路由
+
+**MCP Gateway 解決的問題：**
+```
+沒有 Gateway（每個 Agent 直連每個 Server）：
+Agent A ──→ DB Server
+Agent A ──→ File Server
+Agent A ──→ Search Server
+Agent B ──→ DB Server
+Agent B ──→ File Server
+（連線管理複雜，認證分散）
+
+有 Gateway（統一入口）：
+Agent A ──→ MCP Gateway ──→ DB Server
+Agent B ──→ MCP Gateway ──→ File Server
+                         ──→ Search Server
+（統一認證、路由、監控、限流）
+```
+
+**MCP Gateway 的功能：**
+| 功能 | 說明 |
+|------|------|
+| 路由 | 根據工具名稱把請求轉發到對應的 MCP Server |
+| 認證 | 統一管理 API Key，Agent 只需要一組憑證 |
+| 限流 | 控制每個 Agent 的呼叫頻率 |
+| 監控 | 記錄所有工具呼叫，方便除錯和審計 |
+| 工具發現 | Agent 可以查詢 Gateway 知道有哪些工具可用 |
+
+**實際使用情境：**
+在 Kiro 這類 AI 開發環境中，MCP Gateway 讓 AI Agent 能夠統一存取：檔案系統、終端機、瀏覽器、資料庫等各種工具，而不需要為每個工具單獨設定連線。
+
+---

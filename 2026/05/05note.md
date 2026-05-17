@@ -48,3 +48,33 @@
 - 反向代理（Reverse Proxy）
 - SSL
 - Lua
+
+## 0513
+- 可以被執行的東西，電腦的邏輯
+- imperative vs declarative (用terraform跟script的差別)
+- terraform state list | 可以看到存在的行數
+- terraform state rm 刪除
+- terraform target
+- race condition
+- du 是什麼
+- bundle
+- fine tune
+- 開源跟閉源的model
+- tempurcure?
+- rule cource
+- 下個section會用到什麼？解決這個任務會用到哪些context
+- SSE = Server-Sent Events
+
+## 0517
+- Integration test
+- FastAPI TestClient 的用法
+- MockWorkflow 的概念
+- pytest、asyncio、AsyncMock
+- workflow_mode=mock/integration 
+- Optimistic Locking 樂觀鎖 
+- EIG 
+- traceparent 
+- SubAgent 是什麼、MCP Gateway 是什麼
+
+## 0518
+- CIDR
