@@ -78,3 +78,11 @@
 
 ## 0518
 - CIDR
+- OpenTelemetry
+- LangGraph
+- sse-starlette
+- sse中的yeild
+- httpx 
+- uvicorn
+- asyncmock 跟 magicmock差別
+- monorepo

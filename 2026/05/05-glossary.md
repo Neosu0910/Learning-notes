@@ -4018,3 +4018,541 @@ Agent B ──→ MCP Gateway ──→ File Server
 在 Kiro 這類 AI 開發環境中，MCP Gateway 讓 AI Agent 能夠統一存取：檔案系統、終端機、瀏覽器、資料庫等各種工具，而不需要為每個工具單獨設定連線。
 
 ---
+
+## 0518
+
+**CIDR（Classless Inter-Domain Routing）**
+
+CIDR 是一種表示 IP 網段範圍的方式，格式是 `IP位址/前綴長度`，用來描述「這個網段包含哪些 IP」。
+
+**格式說明：**
+```
+192.168.1.0/24
+
+192.168.1.0  → 網段的起始 IP
+/24          → 前 24 bits 是網路部分，後 8 bits 是主機部分
+              → 代表這個網段有 2^8 = 256 個 IP（192.168.1.0 ～ 192.168.1.255）
+```
+
+**常見的 CIDR 大小：**
+
+| CIDR | 可用 IP 數 | 說明 |
+|------|-----------|------|
+| /32 | 1 | 單一主機 |
+| /24 | 256（可用 254）| 小型網段，最常見 |
+| /16 | 65,536 | 中型網段 |
+| /8 | 16,777,216 | 大型網段 |
+| /0 | 全部 IP | `0.0.0.0/0` 代表「所有 IP」|
+
+**`0.0.0.0/0` 的特殊意義：**
+在 AWS Security Group 或 Route Table 裡，`0.0.0.0/0` 代表「任何 IP」，常用於：
+- 允許所有人連進來（開放 80/443）
+- 預設路由（所有流量都走這條）
+
+**在 AWS 的實際應用：**
+```
+VPC CIDR：10.0.0.0/16（整個 VPC 的 IP 範圍）
+  ├── Public Subnet：10.0.1.0/24（256 個 IP）
+  ├── Private Subnet：10.0.2.0/24（256 個 IP）
+  └── DB Subnet：10.0.3.0/24（256 個 IP）
+```
+
+```bash
+# AWS CLI 建立 VPC 時指定 CIDR
+aws ec2 create-vpc --cidr-block 10.0.0.0/16
+
+# 建立 Subnet
+aws ec2 create-subnet \
+  --vpc-id vpc-xxxxxxxx \
+  --cidr-block 10.0.1.0/24 \
+  --availability-zone ap-northeast-1a
+```
+
+**判斷某個 IP 是否在某個 CIDR 內（Python）：**
+```python
+import ipaddress
+
+network = ipaddress.ip_network("10.0.1.0/24")
+ip = ipaddress.ip_address("10.0.1.50")
+
+print(ip in network)   # True
+print(ipaddress.ip_address("10.0.2.1") in network)   # False
+```
+
+---
+
+**OpenTelemetry**
+
+OpenTelemetry（簡稱 OTel）是一個開源的可觀測性（Observability）框架，提供統一的標準和工具來收集三種遙測資料：
+
+| 資料類型 | 說明 | 例子 |
+|---------|------|------|
+| **Traces（追蹤）** | 一個請求跨越多個服務的完整路徑 | traceparent、span |
+| **Metrics（指標）** | 數值型的效能資料 | 請求數、延遲、錯誤率 |
+| **Logs（日誌）** | 事件記錄 | 錯誤訊息、操作記錄 |
+
+**為什麼需要 OpenTelemetry：**
+以前每個監控工具（Datadog、Jaeger、Zipkin、AWS X-Ray）都有自己的 SDK，換工具就要改程式碼。OpenTelemetry 提供統一的 API，你只需要寫一次，要送到哪個後端只需要換 exporter。
+
+**架構：**
+```
+你的程式碼
+  → OpenTelemetry SDK（收集資料）
+    → Exporter（送出去）
+      → Jaeger / Zipkin / AWS X-Ray / Datadog / ...
+```
+
+**Python 快速上手：**
+```bash
+pip install opentelemetry-api opentelemetry-sdk
+pip install opentelemetry-instrumentation-fastapi
+```
+
+```python
+from opentelemetry import trace
+from opentelemetry.sdk.trace import TracerProvider
+from opentelemetry.sdk.trace.export import ConsoleSpanExporter, BatchSpanProcessor
+
+provider = TracerProvider()
+provider.add_span_processor(BatchSpanProcessor(ConsoleSpanExporter()))
+trace.set_tracer_provider(provider)
+
+tracer = trace.get_tracer(__name__)
+
+with tracer.start_as_current_span("my-operation") as span:
+    span.set_attribute("user.id", "123")
+    span.set_attribute("request.path", "/api/orders")
+    result = process_order()
+    span.set_attribute("order.id", result["id"])
+```
+
+**FastAPI 自動埋點：**
+```python
+from opentelemetry.instrumentation.fastapi import FastAPIInstrumentor
+from fastapi import FastAPI
+
+app = FastAPI()
+FastAPIInstrumentor.instrument_app(app)
+# 之後所有 HTTP 請求都會自動產生 trace
+```
+
+**與 AWS X-Ray 的關係：**
+AWS 提供 ADOT（AWS Distro for OpenTelemetry），讓你用標準的 OpenTelemetry SDK 把資料送到 X-Ray，不需要用 X-Ray 專屬的 SDK。
+
+---
+
+**LangGraph**
+
+LangGraph 是 LangChain 團隊開發的框架，用來建立**有狀態的、多步驟的 AI Agent 工作流程**。它把 Agent 的執行流程建模成一個有向圖（Graph），每個節點是一個處理步驟，邊是流程的走向。
+
+**為什麼需要 LangGraph：**
+一般的 LLM 呼叫是無狀態的（問一句答一句）。但複雜的 Agent 任務需要：
+- 記住之前的步驟結果
+- 根據條件走不同的分支
+- 在某個步驟失敗時重試或走備用路徑
+- 多個 Agent 協作
+
+**核心概念：**
+- **State**：整個工作流程共享的狀態（類似一個 dict，每個節點都可以讀寫）
+- **Node**：一個處理步驟（LLM 呼叫、工具呼叫、條件判斷等）
+- **Edge**：節點之間的連線，決定執行順序
+- **Conditional Edge**：根據狀態決定走哪條邊
+
+**簡單範例：**
+```python
+from langgraph.graph import StateGraph, END
+from typing import TypedDict
+
+class AgentState(TypedDict):
+    messages: list
+
+def call_llm(state: AgentState) -> AgentState:
+    response = llm.invoke(state["messages"])
+    return {"messages": state["messages"] + [response]}
+
+def use_tool(state: AgentState) -> AgentState:
+    result = search_tool(state["messages"][-1])
+    return {"messages": state["messages"] + [result]}
+
+def should_use_tool(state: AgentState) -> str:
+    last_message = state["messages"][-1]
+    if "需要搜尋" in last_message.content:
+        return "use_tool"
+    return "end"
+
+graph = StateGraph(AgentState)
+graph.add_node("llm", call_llm)
+graph.add_node("tool", use_tool)
+graph.set_entry_point("llm")
+graph.add_conditional_edges("llm", should_use_tool, {
+    "use_tool": "tool",
+    "end": END
+})
+graph.add_edge("tool", "llm")   # 用完工具再回去問 LLM
+
+app = graph.compile()
+result = app.invoke({"messages": [HumanMessage("幫我查一下今天天氣")]})
+```
+
+**與 LangChain 的關係：**
+LangGraph 建立在 LangChain 之上，可以直接使用 LangChain 的 LLM、工具、記憶體等元件，但流程控制改用 Graph 管理。
+
+---
+
+**sse-starlette**
+
+`sse-starlette` 是一個 Python 套件，讓你在 FastAPI（底層是 Starlette）裡輕鬆實作 **SSE（Server-Sent Events）**，也就是伺服器主動推送資料給客戶端的功能。
+
+```bash
+pip install sse-starlette
+```
+
+**基本用法：**
+```python
+from fastapi import FastAPI
+from sse_starlette.sse import EventSourceResponse
+import asyncio
+
+app = FastAPI()
+
+async def event_generator():
+    for i in range(5):
+        yield {
+            "event": "message",
+            "data": f"第 {i+1} 筆資料"
+        }
+        await asyncio.sleep(1)
+
+@app.get("/stream")
+async def stream():
+    return EventSourceResponse(event_generator())
+```
+
+**實際應用：AI 串流回應**
+```python
+from sse_starlette.sse import EventSourceResponse
+import json
+
+async def stream_llm_response(prompt: str):
+    async for chunk in llm.astream(prompt):
+        yield {
+            "event": "message",
+            "data": json.dumps({"text": chunk.content})
+        }
+    yield {"event": "done", "data": json.dumps({"done": True})}
+
+@app.post("/chat")
+async def chat(request: ChatRequest):
+    return EventSourceResponse(stream_llm_response(request.prompt))
+```
+
+**`EventSourceResponse` 做了什麼：**
+- 自動設定 `Content-Type: text/event-stream`
+- 自動設定 `Cache-Control: no-cache`
+- 把你 yield 的 dict 格式化成標準 SSE 格式
+
+---
+
+**SSE 中的 yield**
+
+在 SSE 的情境下，`yield` 讓 async generator 函式「吐出」一筆資料給客戶端，然後**暫停等待**，直到下一筆資料準備好再繼續。
+
+**yield 在這裡的角色：**
+```python
+async def event_generator():
+    yield {"data": "第一筆"}   # 吐出，客戶端立刻收到
+    await asyncio.sleep(1)     # 等 1 秒
+    yield {"data": "第二筆"}   # 再吐出
+```
+
+**跟一般 return 的差別：**
+```python
+# return：等全部算完才回傳（客戶端要等很久）
+async def get_all_data():
+    results = []
+    for i in range(100):
+        result = await slow_operation(i)
+        results.append(result)
+    return results   # 等 100 個都完成才回傳
+
+# yield：每算完一個就推給客戶端（客戶端立刻看到進度）
+async def stream_data():
+    for i in range(100):
+        result = await slow_operation(i)
+        yield {"data": result}   # 算完一個就推一個
+```
+
+**yield 的暫停機制：**
+每次執行到 `yield`，函式暫停，把控制權交還給 event loop。event loop 可以去處理其他請求，等客戶端準備好接收下一筆時，再回來繼續執行這個 generator。
+
+---
+
+**httpx**
+
+`httpx` 是 Python 的 HTTP 客戶端套件，是 `requests` 的現代替代品，最大的差別是**支援 async**。
+
+```bash
+pip install httpx
+```
+
+**同步用法（跟 requests 幾乎一樣）：**
+```python
+import httpx
+
+response = httpx.get("https://api.example.com/users")
+print(response.status_code)
+print(response.json())
+
+response = httpx.post(
+    "https://api.example.com/users",
+    json={"name": "Neo"},
+    headers={"Authorization": "Bearer my-token"}
+)
+```
+
+**非同步用法（在 FastAPI / async 環境裡用這個）：**
+```python
+import httpx
+import asyncio
+
+async def fetch_data():
+    async with httpx.AsyncClient() as client:
+        response = await client.get("https://api.example.com/users")
+        return response.json()
+
+# 同時發多個請求
+async def fetch_multiple():
+    async with httpx.AsyncClient() as client:
+        results = await asyncio.gather(
+            client.get("https://api.example.com/users"),
+            client.get("https://api.example.com/orders"),
+        )
+    return [r.json() for r in results]
+```
+
+**在測試裡用 httpx 測 FastAPI：**
+```python
+import pytest
+import httpx
+from app.main import app
+
+@pytest.mark.asyncio
+async def test_async():
+    async with httpx.AsyncClient(app=app, base_url="http://test") as client:
+        response = await client.get("/users")
+        assert response.status_code == 200
+```
+
+**httpx vs requests：**
+
+| | requests | httpx |
+|--|----------|-------|
+| async 支援 | 不支援 | 支援（AsyncClient）|
+| HTTP/2 | 不支援 | 支援 |
+| 語法 | - | 幾乎一樣 |
+| 適合場景 | 簡單腳本 | FastAPI、async 環境 |
+
+---
+
+**uvicorn**
+
+`uvicorn` 是一個高效能的 Python ASGI 伺服器，用來執行 FastAPI、Starlette 等 ASGI 框架的應用程式。
+
+**ASGI 是什麼：**
+ASGI（Asynchronous Server Gateway Interface）是 Python web 框架和伺服器之間的標準介面，支援非同步。相對於舊的 WSGI（只支援同步），ASGI 可以處理 WebSocket、SSE 等長連線。
+
+```
+客戶端請求
+    ↓
+uvicorn（ASGI 伺服器，處理網路連線）
+    ↓
+FastAPI app（你的程式碼）
+    ↓
+回應
+```
+
+**安裝與啟動：**
+```bash
+pip install uvicorn
+
+uvicorn app.main:app                          # 基本啟動
+uvicorn app.main:app --reload                 # 開發模式（自動重啟）
+uvicorn app.main:app --host 0.0.0.0 --port 8080
+uvicorn app.main:app --workers 4              # 多個 worker（生產環境）
+```
+
+**在程式碼裡啟動：**
+```python
+import uvicorn
+from fastapi import FastAPI
+
+app = FastAPI()
+
+if __name__ == "__main__":
+    uvicorn.run(app, host="0.0.0.0", port=8000)
+```
+
+**uvicorn vs gunicorn：**
+
+| | uvicorn | gunicorn |
+|--|---------|----------|
+| 協定 | ASGI（支援 async）| WSGI（同步）|
+| 適合 | FastAPI、Starlette | Flask、Django（舊版）|
+| 多進程 | 需要搭配 gunicorn | 內建 |
+
+**生產環境常見組合：**
+```bash
+gunicorn app.main:app -w 4 -k uvicorn.workers.UvicornWorker
+```
+
+---
+
+**AsyncMock vs MagicMock 的差別**
+
+這兩個都是 `unittest.mock` 裡的工具，差別在於被 mock 的函式是不是 `async def`。
+
+**判斷要用哪個：**
+- 函式定義是 `def`（同步）→ 用 `MagicMock`
+- 函式定義是 `async def`（非同步）→ 用 `AsyncMock`
+
+**MagicMock：用於同步函式**
+```python
+from unittest.mock import MagicMock
+
+mock_db = MagicMock()
+mock_db.get_user.return_value = {"id": 1, "name": "Neo"}
+
+result = mock_db.get_user(1)   # 直接呼叫，不需要 await
+```
+
+**AsyncMock：用於 async 函式**
+```python
+from unittest.mock import AsyncMock
+
+mock_db = AsyncMock()
+mock_db.get_user.return_value = {"id": 1, "name": "Neo"}
+
+result = await mock_db.get_user(1)   # 需要 await
+```
+
+**如果用錯會怎樣：**
+```python
+mock = MagicMock()
+result = await mock.some_async_method()
+# TypeError: object MagicMock can't be used in 'await' expression
+```
+
+**實際測試範例（同時用兩個）：**
+```python
+import pytest
+from unittest.mock import AsyncMock, MagicMock
+
+class UserService:
+    def __init__(self, db, cache):
+        self.db = db       # db.get_user 是 async
+        self.cache = cache  # cache.get 是同步
+
+    async def get_user(self, user_id: str):
+        cached = self.cache.get(f"user:{user_id}")   # 同步
+        if cached:
+            return cached
+        user = await self.db.get_user(user_id)       # async
+        return user
+
+@pytest.mark.asyncio
+async def test_get_user_from_db():
+    mock_cache = MagicMock()            # 同步 → MagicMock
+    mock_cache.get.return_value = None  # cache miss
+
+    mock_db = AsyncMock()               # async → AsyncMock
+    mock_db.get_user.return_value = {"id": "123", "name": "Neo"}
+
+    service = UserService(db=mock_db, cache=mock_cache)
+    result = await service.get_user("123")
+
+    assert result["name"] == "Neo"
+    mock_cache.get.assert_called_once_with("user:123")
+    mock_db.get_user.assert_awaited_once_with("123")   # assert_awaited，不是 assert_called
+```
+
+---
+
+**Monorepo**
+
+Monorepo（Monolithic Repository）是一種程式碼管理策略，把多個專案或服務的程式碼**全部放在同一個 Git repository** 裡，而不是每個服務各自一個 repo。
+
+**Monorepo vs Polyrepo：**
+
+| | Monorepo | Polyrepo |
+|--|----------|----------|
+| 結構 | 一個 repo，多個專案 | 每個專案各自一個 repo |
+| 程式碼共用 | 容易，直接 import | 需要發布成套件再安裝 |
+| 跨專案改動 | 一個 PR 就能改多個服務 | 需要多個 PR 協調 |
+| CI/CD | 需要聰明的增量建置 | 每個 repo 獨立跑 |
+| 適合 | 服務間耦合高、共用程式碼多 | 服務完全獨立、團隊各自負責 |
+
+**典型的 Monorepo 目錄結構：**
+```
+my-monorepo/
+├── services/
+│   ├── api-gateway/        ← 服務 A
+│   ├── user-service/       ← 服務 B
+│   └── order-service/      ← 服務 C
+├── packages/
+│   ├── shared-models/      ← 共用的資料模型
+│   ├── shared-utils/       ← 共用的工具函式
+│   └── shared-types/       ← 共用的型別定義
+├── infrastructure/
+│   └── terraform/          ← 基礎設施程式碼
+└── Makefile                ← 統一的建置指令
+```
+
+**Monorepo 的優點：**
+- **原子性提交**：一個功能跨多個服務的改動，可以在同一個 commit 裡完成，不會有「A 服務改了但 B 服務還沒跟上」的中間狀態
+- **共用程式碼容易**：`shared-models` 裡的型別定義，所有服務直接 import，不需要發布 npm/pip 套件
+- **統一工具鏈**：linter、formatter、測試框架全部統一設定，不用每個 repo 各自維護
+
+**Monorepo 的挑戰：**
+- **CI/CD 要聰明**：每次 push 不能把所有服務都重新建置，要只建置有改動的部分（增量建置）
+- **repo 越來越大**：clone 時間長，需要用 sparse checkout 或 shallow clone
+- **權限管理複雜**：不同團隊負責不同服務，但都在同一個 repo 裡
+
+**常見的 Monorepo 工具：**
+
+| 工具 | 語言 | 說明 |
+|------|------|------|
+| Nx | JS/TS | 智慧增量建置，只跑受影響的專案 |
+| Turborepo | JS/TS | Vercel 出品，快速的 pipeline 快取 |
+| Bazel | 多語言 | Google 內部工具，支援大型 monorepo |
+| Poetry workspaces | Python | Python 的 monorepo 套件管理 |
+
+**在 Python 專案的實作（Poetry workspaces）：**
+```
+my-python-monorepo/
+├── pyproject.toml
+├── services/
+│   ├── api/
+│   │   └── pyproject.toml
+│   └── worker/
+│       └── pyproject.toml
+└── packages/
+    └── shared/
+        └── pyproject.toml
+```
+
+```toml
+# 根目錄 pyproject.toml
+[tool.poetry.dependencies]
+python = "^3.11"
+
+[tool.poetry.group.dev.dependencies]
+pytest = "^7.0"
+ruff = "^0.1"
+```
+
+**知名使用 Monorepo 的公司：**
+- Google：整個公司幾乎所有程式碼在一個 repo（數十億行）
+- Meta：React、Jest 等都在同一個 monorepo
+- Microsoft：VS Code、TypeScript 等
+
+---
