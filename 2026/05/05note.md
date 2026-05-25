@@ -5,7 +5,7 @@
 - traceroute
 - ip 跟 endpoint 關係
 - ENI 跟上網的關聯性
-- interface endpoints 跟 Gateway endpoints 放的差別
+- interface endpoints 跟 Gateway endpoints  放的差別
 - inter 一定要放在 private 裡面？
 - IO bound / CPU bound
 - async await
@@ -86,3 +86,19 @@
 - uvicorn
 - asyncmock 跟 magicmock差別
 - monorepo
+
+## 0519 
+- 軟體世界的業務邏輯代表什麼？
+- repo層，service層，...
+- dry
+- class
+- ins
+- 物件導向 文章
+- python super() 用法
+
+## 0524
+- IDE
+- entity 
+- clean architecture
+- uvlock
+

@@ -4556,3 +4556,501 @@ ruff = "^0.1"
 - Microsoft：VS Code、TypeScript 等
 
 ---
+
+## 0519
+
+**軟體世界的業務邏輯代表什麼？**
+
+業務邏輯（Business Logic）是程式中「真正在做事」的那一層，也就是把現實世界的規則翻譯成程式碼的部分。它不是 HTTP 處理、不是資料庫操作、不是 UI 渲染，而是「這個系統的核心規則」。
+
+**例子：**
+- 電商系統：「庫存不足時不能下單」「滿 1000 免運費」「VIP 會員打 9 折」
+- 銀行系統：「餘額不足不能轉帳」「單日轉帳上限 50 萬」
+- 聊天機器人：「收到用戶訊息後，呼叫 LLM，把回應串流回去」
+
+**為什麼要把業務邏輯獨立出來：**
+如果業務邏輯混在 HTTP handler 或資料庫操作裡，會很難測試、很難重用、很難改。把它獨立成一層（Service 層），就可以：
+- 單獨測試（不需要啟動 HTTP server 或連資料庫）
+- 換框架時不用改（從 FastAPI 換成 Flask，業務邏輯不動）
+- 多個入口共用（API 和 CLI 都呼叫同一個 Service）
+
+```python
+# 業務邏輯混在 router 裡（不好）
+@app.post("/orders")
+async def create_order(request: OrderRequest, db: Session):
+    product = db.query(Product).get(request.product_id)
+    if product.stock < request.quantity:
+        raise HTTPException(400, "庫存不足")
+    product.stock -= request.quantity
+    order = Order(product_id=product.id, quantity=request.quantity)
+    db.add(order)
+    db.commit()
+    return order
+
+# 業務邏輯獨立成 Service（好）
+class OrderService:
+    def __init__(self, repo: OrderRepository):
+        self.repo = repo
+
+    async def create_order(self, product_id: str, quantity: int) -> Order:
+        product = await self.repo.get_product(product_id)
+        if product.stock < quantity:
+            raise InsufficientStockError()
+        product.stock -= quantity
+        order = Order(product_id=product_id, quantity=quantity)
+        await self.repo.save(order)
+        return order
+```
+
+---
+
+**Repo 層、Service 層（分層架構）**
+
+軟體常見的分層架構，每一層只負責一件事：
+
+```
+Router 層（Controller）
+  → 處理 HTTP 請求/回應、參數驗證、狀態碼
+  → 不包含業務邏輯
+
+Service 層
+  → 業務邏輯（規則、流程、判斷）
+  → 不知道 HTTP，也不知道資料庫怎麼存
+
+Repository 層（Repo）
+  → 資料存取（CRUD）
+  → 只負責跟資料庫溝通
+```
+
+**為什麼要分層：**
+- **可測試性**：測 Service 時 mock Repo，測 Router 時 mock Service
+- **可替換性**：換資料庫只改 Repo，業務邏輯不動
+- **職責清楚**：每層只做一件事，出 bug 容易定位
+
+**實際範例：**
+```python
+# repository.py（Repo 層）
+class UserRepository:
+    def __init__(self, db: AsyncSession):
+        self.db = db
+
+    async def get_by_id(self, user_id: str) -> User | None:
+        return await self.db.get(User, user_id)
+
+    async def save(self, user: User):
+        self.db.add(user)
+        await self.db.commit()
+
+# service.py（Service 層）
+class UserService:
+    def __init__(self, repo: UserRepository):
+        self.repo = repo
+
+    async def get_user(self, user_id: str) -> User:
+        user = await self.repo.get_by_id(user_id)
+        if not user:
+            raise UserNotFoundError(user_id)
+        return user
+
+# router.py（Router 層）
+@app.get("/users/{user_id}")
+async def get_user(user_id: str, service: UserService = Depends()):
+    user = await service.get_user(user_id)
+    return UserResponse.from_entity(user)
+```
+
+---
+
+**DRY（Don't Repeat Yourself）**
+
+DRY 是軟體開發的核心原則之一：**不要重複自己**。如果同一段邏輯出現在兩個以上的地方，就應該抽出來成為一個函式、類別或模組。
+
+**為什麼重複是壞事：**
+- 改一個地方忘了改另一個 → bug
+- 維護成本加倍
+- 程式碼越來越長，越來越難讀
+
+**DRY 的實踐：**
+```python
+# 違反 DRY（同樣的驗證邏輯寫了兩次）
+@app.post("/orders")
+async def create_order(request: OrderRequest):
+    if not request.user_id:
+        raise HTTPException(400, "user_id is required")
+    if not request.product_id:
+        raise HTTPException(400, "product_id is required")
+    ...
+
+@app.post("/returns")
+async def create_return(request: ReturnRequest):
+    if not request.user_id:
+        raise HTTPException(400, "user_id is required")
+    if not request.order_id:
+        raise HTTPException(400, "order_id is required")
+    ...
+
+# 遵守 DRY（抽出共用邏輯）
+def validate_required(value, field_name: str):
+    if not value:
+        raise HTTPException(400, f"{field_name} is required")
+```
+
+**注意：DRY 不是絕對的**
+如果兩段程式碼「看起來一樣」但「原因不同」，強行合併反而會造成耦合。判斷標準是：如果其中一個改了，另一個也一定要跟著改，那才應該合併。
+
+---
+
+**Class（類別）**
+
+Class 是物件導向程式設計（OOP）的核心概念，用來定義「一種東西的藍圖」，描述它有什麼屬性（資料）和什麼方法（行為）。
+
+**直觀理解：**
+- Class 是「設計圖」
+- Instance（實例）是「根據設計圖蓋出來的房子」
+- 你可以用同一張設計圖蓋很多間房子，每間有不同的地址和住戶
+
+```python
+# 定義 Class（設計圖）
+class Dog:
+    def __init__(self, name: str, breed: str):
+        self.name = name      # 屬性：名字
+        self.breed = breed    # 屬性：品種
+
+    def bark(self):           # 方法：行為
+        return f"{self.name} says: Woof!"
+
+# 建立 Instance（根據設計圖蓋出來的）
+my_dog = Dog(name="Lucky", breed="Golden Retriever")
+your_dog = Dog(name="Max", breed="Husky")
+
+print(my_dog.bark())    # Lucky says: Woof!
+print(your_dog.bark())  # Max says: Woof!
+```
+
+**在 FastAPI 專案中的實際用法：**
+```python
+# Service 是一個 Class
+class ChatService:
+    def __init__(self, workflow, memory):
+        self.workflow = workflow
+        self.memory = memory
+
+    async def execute(self, message: str):
+        result = await self.workflow.run(message)
+        await self.memory.save(result)
+        return result
+
+# 建立 instance 時注入依賴
+service = ChatService(workflow=real_workflow, memory=real_memory)
+
+# 測試時注入 mock
+test_service = ChatService(workflow=mock_workflow, memory=mock_memory)
+```
+
+---
+
+**Instance（實例）**
+
+Instance 是 Class 的「具體化」，也就是根據 Class 這個藍圖建立出來的實際物件。
+
+```python
+class Car:
+    def __init__(self, brand: str, color: str):
+        self.brand = brand
+        self.color = color
+
+# Car 是 Class（藍圖）
+# my_car 是 Instance（實際的車）
+my_car = Car(brand="Toyota", color="white")
+your_car = Car(brand="BMW", color="black")
+
+# 每個 instance 有自己的屬性值
+print(my_car.color)    # white
+print(your_car.color)  # black
+
+# 判斷是否為某個 Class 的 instance
+print(isinstance(my_car, Car))   # True
+```
+
+**Instance vs Class 的關係：**
+- Class 定義「有哪些屬性和方法」
+- Instance 是「實際存在的物件，有具體的值」
+- 一個 Class 可以建立無數個 Instance
+
+---
+
+**物件導向程式設計（OOP）**
+
+OOP（Object-Oriented Programming）是一種程式設計範式，核心思想是把程式組織成「物件」，每個物件封裝自己的資料和行為。
+
+**四大特性：**
+
+| 特性 | 說明 | 例子 |
+|------|------|------|
+| 封裝（Encapsulation）| 把資料和操作包在一起，外部只能透過方法存取 | `user.get_name()` 而不是直接讀 `user._name` |
+| 繼承（Inheritance）| 子類別繼承父類別的屬性和方法 | `Dog` 繼承 `Animal` |
+| 多型（Polymorphism）| 不同類別可以有相同的方法名，但行為不同 | `cat.speak()` 和 `dog.speak()` 都叫 speak 但叫聲不同 |
+| 抽象（Abstraction）| 隱藏實作細節，只暴露介面 | 你呼叫 `db.save()`，不需要知道底層是 PostgreSQL 還是 MySQL |
+
+```python
+from abc import ABC, abstractmethod
+
+# 抽象類別（定義介面）
+class NotificationService(ABC):
+    @abstractmethod
+    async def send(self, to: str, message: str):
+        pass
+
+# 具體實作 A
+class EmailNotification(NotificationService):
+    async def send(self, to: str, message: str):
+        await send_email(to, message)
+
+# 具體實作 B
+class SlackNotification(NotificationService):
+    async def send(self, to: str, message: str):
+        await post_to_slack(to, message)
+
+# 使用時不需要知道是哪種實作（多型）
+async def notify_user(service: NotificationService, user_email: str):
+    await service.send(user_email, "你的訂單已出貨")
+```
+
+---
+
+**Python super() 用法**
+
+`super()` 用來呼叫父類別的方法，最常見的場景是在子類別的 `__init__` 裡呼叫父類別的初始化。
+
+**基本用法：**
+```python
+class Animal:
+    def __init__(self, name: str):
+        self.name = name
+
+    def speak(self):
+        return f"{self.name} makes a sound"
+
+class Dog(Animal):
+    def __init__(self, name: str, breed: str):
+        super().__init__(name)   # 呼叫 Animal 的 __init__，設定 self.name
+        self.breed = breed       # Dog 自己的屬性
+
+    def speak(self):
+        return f"{self.name} says: Woof!"
+
+dog = Dog("Lucky", "Golden")
+print(dog.name)     # Lucky（來自 Animal.__init__）
+print(dog.breed)    # Golden（來自 Dog.__init__）
+print(dog.speak())  # Lucky says: Woof!
+```
+
+**為什麼需要 super()：**
+如果不呼叫 `super().__init__()`，父類別的初始化不會執行，`self.name` 就不會被設定。
+
+```python
+class Dog(Animal):
+    def __init__(self, name: str, breed: str):
+        # 忘了呼叫 super().__init__(name)
+        self.breed = breed
+
+dog = Dog("Lucky", "Golden")
+print(dog.name)   # AttributeError: 'Dog' object has no attribute 'name'
+```
+
+**在 FastAPI/Pydantic 中的應用：**
+```python
+from pydantic import BaseModel
+
+class BaseResponse(BaseModel):
+    success: bool = True
+    timestamp: str
+
+class UserResponse(BaseResponse):
+    user_id: str
+    name: str
+    # 自動繼承 success 和 timestamp 欄位
+```
+
+---
+
+## 0524
+
+**IDE（Integrated Development Environment）**
+
+IDE 是整合開發環境，把寫程式需要的所有工具整合在一個介面裡：程式碼編輯器、終端機、除錯器、版本控制、自動補全等。
+
+**常見的 IDE：**
+
+| IDE | 適合語言 | 特色 |
+|-----|---------|------|
+| VS Code / Kiro | 多語言 | 輕量、擴充套件豐富 |
+| PyCharm | Python | Python 專用，功能完整 |
+| IntelliJ IDEA | Java/Kotlin | JetBrains 出品，企業級 |
+| Xcode | Swift/Obj-C | Apple 開發必備 |
+
+**IDE vs 文字編輯器的差別：**
+- 文字編輯器（vim、nano）：只能編輯文字
+- IDE：編輯 + 自動補全 + 除錯 + 重構 + 版本控制 + 終端機，全部整合在一起
+
+---
+
+**Entity（實體）**
+
+在軟體架構中，Entity 是代表「業務核心概念」的物件，通常對應到資料庫的一筆資料，有唯一的 ID 來識別。
+
+**Entity 的特徵：**
+- 有唯一識別（ID）
+- 有生命週期（建立、修改、刪除）
+- 代表業務概念（User、Order、Product）
+
+```python
+# Entity 範例
+from dataclasses import dataclass
+from datetime import datetime
+
+@dataclass
+class User:
+    id: str
+    name: str
+    email: str
+    created_at: datetime
+    updated_at: datetime
+
+@dataclass
+class Order:
+    id: str
+    user_id: str
+    product_id: str
+    quantity: int
+    status: str   # pending, paid, shipped, completed
+    created_at: datetime
+```
+
+**Entity vs DTO vs Model：**
+
+| 概念 | 用途 | 位置 |
+|------|------|------|
+| Entity | 業務核心物件，有 ID 和行為 | Service 層 / Domain 層 |
+| DTO（Data Transfer Object）| 傳輸用的資料結構，沒有行為 | Router 層（Request/Response）|
+| Model | ORM 對應到資料庫表的類別 | Repository 層 |
+
+```python
+# Entity（業務核心）
+class User:
+    id: str
+    name: str
+    def change_name(self, new_name: str): ...
+
+# DTO（API 傳輸用）
+class CreateUserRequest(BaseModel):
+    name: str
+    email: str
+
+class UserResponse(BaseModel):
+    id: str
+    name: str
+
+# Model（ORM，對應資料庫）
+class UserModel(Base):
+    __tablename__ = "users"
+    id = Column(String, primary_key=True)
+    name = Column(String)
+    email = Column(String)
+```
+
+---
+
+**Clean Architecture（乾淨架構）**
+
+Clean Architecture 是 Robert C. Martin（Uncle Bob）提出的架構設計原則，核心思想是：**依賴方向永遠從外層指向內層**，內層不知道外層的存在。
+
+**同心圓架構：**
+```
+┌─────────────────────────────────────────────┐
+│  Frameworks & Drivers（最外層）              │
+│  Web 框架、資料庫、外部 API                  │
+├─────────────────────────────────────────────┤
+│  Interface Adapters（轉接層）                │
+│  Controller、Presenter、Repository 實作      │
+├─────────────────────────────────────────────┤
+│  Use Cases / Application（應用層）           │
+│  業務邏輯、Service                           │
+├─────────────────────────────────────────────┤
+│  Entities（最內層）                          │
+│  核心業務物件、業務規則                       │
+└─────────────────────────────────────────────┘
+```
+
+**依賴規則：箭頭只能從外指向內**
+- Entity 不知道 Use Case 的存在
+- Use Case 不知道 Controller 或 DB 的存在
+- Controller 知道 Use Case，但不知道 DB 怎麼實作
+
+**對應到 Python 專案：**
+```
+src/
+├── domain/           ← Entity（最內層）
+│   └── user.py       # User entity，純業務規則
+├── application/      ← Use Case
+│   └── create_user.py  # 業務流程
+├── infrastructure/   ← 外部實作
+│   ├── db/           # SQLAlchemy model、repository 實作
+│   └── http/         # 外部 API client
+└── presentation/     ← 最外層
+    └── api/          # FastAPI router
+```
+
+**為什麼要這樣分：**
+- 換資料庫（PostgreSQL → DynamoDB）只改 infrastructure，業務邏輯不動
+- 換框架（FastAPI → Flask）只改 presentation，業務邏輯不動
+- 測試 Use Case 時不需要真實資料庫，mock Repository 介面就好
+
+---
+
+**uv.lock**
+
+`uv.lock` 是 `uv`（一個超快的 Python 套件管理工具）產生的鎖定檔案，記錄專案所有依賴的**精確版本**，確保每個人安裝的套件版本完全一致。
+
+**為什麼需要 lock 檔：**
+`pyproject.toml` 裡寫的是版本範圍（如 `fastapi >= 0.100`），但不同時間安裝可能裝到不同版本。lock 檔記錄「上次安裝時實際解析出的精確版本」，確保可重現。
+
+```
+pyproject.toml：fastapi >= 0.100（範圍）
+uv.lock：fastapi == 0.115.6（精確版本 + hash）
+```
+
+**uv 的基本用法：**
+```bash
+# 安裝 uv
+curl -LsSf https://astral.sh/uv/install.sh | sh
+
+# 初始化專案
+uv init my-project
+
+# 新增依賴（會自動更新 uv.lock）
+uv add fastapi
+uv add pytest --dev
+
+# 安裝所有依賴（根據 uv.lock）
+uv sync
+
+# 執行程式（自動使用正確的虛擬環境）
+uv run python main.py
+uv run pytest
+```
+
+**uv.lock 要不要 commit 進 git：**
+- **應用程式（API、服務）**：要 commit，確保部署時版本一致
+- **函式庫（給別人用的套件）**：通常不 commit，讓使用者自己解析
+
+**uv vs pip vs poetry：**
+
+| | pip | poetry | uv |
+|--|-----|--------|-----|
+| 速度 | 慢 | 中等 | 極快（Rust 寫的）|
+| Lock 檔 | 無（需要 pip-tools）| poetry.lock | uv.lock |
+| 虛擬環境管理 | 手動 | 自動 | 自動 |
+| 解析依賴 | 基本 | 完整 | 完整 |
+
+---
