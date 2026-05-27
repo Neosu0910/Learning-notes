@@ -106,4 +106,4 @@
 - generic 語法 例如: typevar
 - sonarQube
 - Json-RPC
-
+- Hard reload

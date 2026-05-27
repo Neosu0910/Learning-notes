@@ -5243,3 +5243,43 @@ DELETE /users/123          → 刪除用戶 123
 Anthropic 的 MCP（Model Context Protocol）底層就是用 JSON-RPC 2.0 來讓 AI 模型呼叫工具，因為「呼叫工具」這個概念更接近「執行方法」而不是「操作資源」。
 
 ---
+
+**Hard Reload（強制重新載入）**
+
+Hard Reload 是強制瀏覽器**忽略快取**，重新從伺服器下載所有資源（HTML、CSS、JS、圖片等）。相對於一般的 Reload（F5），Hard Reload 確保你看到的是最新版本，而不是瀏覽器快取的舊版本。
+
+**三種重新載入的差別：**
+
+| 操作 | 行為 | 快捷鍵（macOS）|
+|------|------|--------------|
+| 一般 Reload | 重新載入頁面，但可能使用快取 | `Cmd + R` |
+| Hard Reload | 忽略快取，重新下載所有資源 | `Cmd + Shift + R` |
+| Empty Cache + Hard Reload | 清空快取再重新下載 | DevTools 開啟時，長按重新整理按鈕 |
+
+**什麼時候需要 Hard Reload：**
+- 你更新了 CSS 或 JS，但瀏覽器還顯示舊版本
+- 部署了新版本，但頁面看起來沒有變化
+- 開發時改了靜態資源，想確認效果
+
+**背後原理：**
+瀏覽器快取靜態資源是為了加速載入。一般 Reload 時，瀏覽器會發送帶有 `If-None-Match` 或 `If-Modified-Since` header 的請求，如果伺服器說「沒變」就用快取。Hard Reload 則是發送帶有 `Cache-Control: no-cache` 的請求，強制伺服器回傳最新版本。
+
+**在開發中避免快取問題的方法：**
+```html
+<!-- 在 HTML 裡加版本號，讓瀏覽器認為是新檔案 -->
+<link rel="stylesheet" href="/style.css?v=1.2.3">
+<script src="/app.js?v=1.2.3"></script>
+```
+
+```nginx
+# nginx 設定：讓 HTML 不快取，靜態資源長期快取
+location ~* \.(html)$ {
+    add_header Cache-Control "no-cache";
+}
+
+location ~* \.(js|css|png|jpg)$ {
+    add_header Cache-Control "public, max-age=31536000, immutable";
+}
+```
+
+---
