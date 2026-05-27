@@ -5054,3 +5054,192 @@ uv run pytest
 | 解析依賴 | 基本 | 完整 | 完整 |
 
 ---
+
+## 0527
+
+**Generic 語法 / TypeVar**
+
+Generic（泛型）是一種讓函式或類別「不綁定特定型別」的寫法，讓你可以寫出可重用的程式碼，同時保留型別安全。TypeVar 是 Python 裡定義泛型型別變數的工具。
+
+**為什麼需要 Generic：**
+如果你寫一個「回傳第一個元素」的函式，不用泛型的話：
+```python
+# 只能處理 int，不夠通用
+def first(items: list[int]) -> int:
+    return items[0]
+
+# 用 Any 失去型別安全
+from typing import Any
+def first(items: list[Any]) -> Any:
+    return items[0]
+```
+
+用 Generic 就可以「保留型別資訊」：
+```python
+from typing import TypeVar
+
+T = TypeVar('T')   # T 是一個型別變數，代表「任意型別」
+
+def first(items: list[T]) -> T:
+    return items[0]
+
+# 型別檢查器知道回傳值的型別
+result = first([1, 2, 3])      # result 的型別是 int
+result = first(["a", "b"])     # result 的型別是 str
+```
+
+**TypeVar 的進階用法：**
+```python
+from typing import TypeVar
+
+# 限制 T 只能是 int 或 float
+Number = TypeVar('Number', int, float)
+
+def add(a: Number, b: Number) -> Number:
+    return a + b
+
+add(1, 2)       # OK
+add(1.0, 2.0)   # OK
+add("a", "b")   # 型別錯誤
+
+# 限制 T 必須是某個類別的子類別
+from typing import TypeVar
+from pydantic import BaseModel
+
+ModelT = TypeVar('ModelT', bound=BaseModel)
+
+def validate_and_return(data: dict, model_class: type[ModelT]) -> ModelT:
+    return model_class(**data)
+```
+
+**Python 3.12+ 的新語法（更簡潔）：**
+```python
+# 舊寫法
+from typing import TypeVar
+T = TypeVar('T')
+def first(items: list[T]) -> T: ...
+
+# 新寫法（Python 3.12+）
+def first[T](items: list[T]) -> T:
+    return items[0]
+```
+
+**在 FastAPI / Pydantic 的實際應用：**
+```python
+from typing import TypeVar, Generic
+from pydantic import BaseModel
+
+T = TypeVar('T')
+
+# 通用的分頁回應格式
+class PaginatedResponse(BaseModel, Generic[T]):
+    items: list[T]
+    total: int
+    page: int
+    page_size: int
+
+# 使用時指定具體型別
+class UserResponse(BaseModel):
+    id: str
+    name: str
+
+# 回傳型別是 PaginatedResponse[UserResponse]
+@app.get("/users")
+async def list_users() -> PaginatedResponse[UserResponse]:
+    ...
+```
+
+---
+
+**SonarQube**
+
+SonarQube 是一個靜態程式碼分析平台，自動掃描程式碼找出潛在問題，包含：程式碼品質問題、安全漏洞、重複程式碼、測試覆蓋率等。
+
+**SonarQube 能找出什麼：**
+
+| 類別 | 說明 | 例子 |
+|------|------|------|
+| Bug | 可能導致錯誤的程式碼 | 空指標存取、資源未關閉 |
+| Vulnerability（漏洞）| 安全性問題 | SQL injection、硬編碼密碼 |
+| Code Smell | 不影響功能但難維護的程式碼 | 函式太長、重複邏輯 |
+| Security Hotspot | 需要人工審查的安全敏感點 | 加密演算法使用 |
+| Coverage | 測試覆蓋率 | 哪些程式碼沒有被測試到 |
+| Duplications | 重複程式碼 | 違反 DRY 的地方 |
+
+**在 CI/CD 中的整合：**
+```yaml
+# GitHub Actions 範例
+- name: SonarQube Scan
+  uses: SonarSource/sonarqube-scan-action@master
+  env:
+    SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+    SONAR_HOST_URL: ${{ secrets.SONAR_HOST_URL }}
+```
+
+**Quality Gate（品質閘門）：**
+SonarQube 可以設定「品質閘門」，如果程式碼不符合標準（例如新增程式碼的測試覆蓋率低於 80%），CI 就會失敗，阻止合併。
+
+**SonarQube vs SonarCloud：**
+- SonarQube：自架版本，部署在自己的伺服器
+- SonarCloud：雲端版本，不需要自架，適合開源或小團隊
+
+---
+
+**JSON-RPC vs REST 的差別**
+
+兩者都是 API 的設計風格，但思維方式完全不同。
+
+**REST（Representational State Transfer）：**
+- 以「資源」為中心，URL 代表資源，HTTP 方法代表動作
+- 無狀態，每個請求都是獨立的
+- 利用 HTTP 的語義（GET/POST/PUT/DELETE、狀態碼）
+
+```
+GET    /users/123          → 取得用戶 123
+POST   /users              → 建立新用戶
+PUT    /users/123          → 更新用戶 123
+DELETE /users/123          → 刪除用戶 123
+```
+
+**JSON-RPC（JSON Remote Procedure Call）：**
+- 以「動作/方法」為中心，呼叫遠端的函式
+- 所有請求都用 POST，URL 通常固定（如 `/rpc`）
+- 請求 body 裡指定要呼叫的方法名稱和參數
+
+```json
+// 請求
+{
+  "jsonrpc": "2.0",
+  "method": "getUser",
+  "params": {"id": 123},
+  "id": 1
+}
+
+// 回應
+{
+  "jsonrpc": "2.0",
+  "result": {"id": 123, "name": "Neo"},
+  "id": 1
+}
+```
+
+**比較：**
+
+| | REST | JSON-RPC |
+|--|------|----------|
+| 設計思維 | 資源導向 | 動作導向 |
+| URL 設計 | 每個資源有獨立 URL | 通常只有一個 endpoint |
+| HTTP 方法 | 充分利用 GET/POST/PUT/DELETE | 幾乎只用 POST |
+| 錯誤處理 | HTTP 狀態碼（404、500 等）| 統一用 200，錯誤在 body 裡 |
+| 適合場景 | 資源的 CRUD 操作 | 複雜的遠端方法呼叫 |
+| 常見使用 | Web API、RESTful 服務 | 區塊鏈 API、內部 RPC 服務 |
+
+**什麼時候用 JSON-RPC：**
+- 操作不容易對應到 CRUD（例如「計算兩點距離」「發送通知」）
+- 需要批次呼叫多個方法（JSON-RPC 支援 batch request）
+- 內部服務間通訊，不需要 REST 的語義
+
+**MCP 也用 JSON-RPC：**
+Anthropic 的 MCP（Model Context Protocol）底層就是用 JSON-RPC 2.0 來讓 AI 模型呼叫工具，因為「呼叫工具」這個概念更接近「執行方法」而不是「操作資源」。
+
+---
