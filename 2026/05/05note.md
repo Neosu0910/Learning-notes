@@ -107,3 +107,8 @@
 - sonarQube
 - Json-RPC
 - Hard reload
+
+## 0529
+- AWS X-Ray
+- CloudWatch Logs Insight
+- docker中的volume跟專案的關係

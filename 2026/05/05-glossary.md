@@ -5283,3 +5283,372 @@ location ~* \.(js|css|png|jpg)$ {
 ```
 
 ---
+
+## 0529
+
+**AWS X-Ray**
+
+AWS X-Ray 是 AWS 提供的**分散式追蹤（Distributed Tracing）服務**，讓你能夠追蹤一個請求從進入系統到結束的完整路徑，看清楚它經過了哪些服務、每個環節花了多少時間、哪裡出了問題。
+
+**解決什麼問題：**
+現代應用通常由多個微服務組成（API Gateway → Lambda → DynamoDB → 外部 API），當一個請求變慢或出錯，你很難知道問題出在哪一段。X-Ray 把整條鏈路串起來，讓你一眼看出瓶頸在哪。
+
+**核心概念：**
+- **Trace（追蹤）**：一個完整請求的生命週期，從頭到尾
+- **Segment（片段）**：Trace 裡的一個服務節點，例如「Lambda 函式的執行」
+- **Subsegment（子片段）**：Segment 裡更細的操作，例如「對 DynamoDB 的一次查詢」
+- **Service Map**：X-Ray 自動畫出的服務拓撲圖，顯示各服務之間的呼叫關係和健康狀態
+
+**架構示意：**
+```
+用戶請求
+  └── API Gateway (Segment: 5ms)
+        └── Lambda (Segment: 120ms)
+              ├── DynamoDB query (Subsegment: 80ms)  ← 瓶頸在這
+              └── 外部 API call (Subsegment: 30ms)
+```
+
+**實作：在 Lambda + Python 裡啟用 X-Ray**
+
+```python
+# 安裝 SDK
+# pip install aws-xray-sdk
+
+from aws_xray_sdk.core import xray_recorder
+from aws_xray_sdk.core import patch_all
+
+# 自動 patch 常用的 library（boto3、requests、httpx 等）
+patch_all()
+
+def lambda_handler(event, context):
+    # X-Ray 會自動追蹤這個 Lambda 的執行
+
+    # 手動建立 subsegment，追蹤自訂的操作
+    with xray_recorder.in_subsegment("process-order") as subsegment:
+        subsegment.put_annotation("order_id", event["order_id"])
+        subsegment.put_metadata("raw_event", event)
+
+        result = process_order(event["order_id"])
+
+    return result
+```
+
+**在 AWS Console 啟用 X-Ray（Lambda）：**
+```bash
+# 用 CLI 啟用 Lambda 的 Active Tracing
+aws lambda update-function-configuration \
+  --function-name my-function \
+  --tracing-config Mode=Active
+```
+
+**X-Ray 與 CloudWatch 的關係：**
+| | CloudWatch Logs | X-Ray |
+|--|----------------|-------|
+| 看什麼 | 每個服務的日誌訊息 | 跨服務的請求鏈路 |
+| 適合場景 | 查看錯誤訊息、debug 單一服務 | 找出哪個服務造成延遲、分析整體架構 |
+| 資料形式 | 文字日誌 | 視覺化的 Trace 圖 |
+
+**實際使用情境：**
+- 用戶反映「結帳很慢」→ 用 X-Ray 找出是哪個服務拖慢了整體
+- 微服務架構中，某個 API 偶爾 timeout → 用 X-Ray 的 Service Map 找出哪條路徑有問題
+- 分析 P99 延遲的來源，決定優化哪個環節
+
+---
+
+**CloudWatch Logs Insights**
+
+CloudWatch Logs Insights 是 AWS 提供的**日誌查詢分析工具**，讓你用類 SQL 的查詢語言，對 CloudWatch 裡的日誌做即時搜尋、過濾、聚合和視覺化，不需要把日誌匯出到其他地方就能分析。
+
+**解決什麼問題：**
+CloudWatch 的日誌量通常很大，用肉眼翻 Log Stream 找問題效率很低。Logs Insights 讓你可以用查詢語言快速找出特定錯誤、統計錯誤頻率、分析延遲分佈等。
+
+**查詢語法（Logs Insights Query Language）：**
+
+```
+# 基本結構
+fields @timestamp, @message
+| filter @message like /ERROR/
+| sort @timestamp desc
+| limit 20
+```
+
+**常用查詢範例：**
+
+```
+# 1. 找出最近 1 小時的所有 ERROR 日誌
+fields @timestamp, @message
+| filter @message like /ERROR/
+| sort @timestamp desc
+| limit 50
+
+# 2. 統計每分鐘的錯誤數量（用來畫趨勢圖）
+filter @message like /ERROR/
+| stats count(*) as error_count by bin(1m)
+
+# 3. 分析 Lambda 的執行時間分佈
+filter @type = "REPORT"
+| stats avg(@duration), max(@duration), 
+        percentile(@duration, 95) as p95,
+        percentile(@duration, 99) as p99
+        by bin(5m)
+
+# 4. 找出最慢的 10 個請求
+filter @type = "REPORT"
+| sort @duration desc
+| limit 10
+| fields @requestId, @duration, @billedDuration
+
+# 5. 統計特定 HTTP 狀態碼的數量
+fields @timestamp, status_code
+| filter status_code >= 400
+| stats count(*) as count by status_code
+| sort count desc
+
+# 6. 解析 JSON 格式的日誌
+fields @timestamp
+| filter ispresent(order_id)
+| stats count(*) as order_count by order_status
+```
+
+**用 AWS CLI 執行查詢：**
+```bash
+# 開始查詢
+QUERY_ID=$(aws logs start-query \
+  --log-group-name /aws/lambda/order-processor \
+  --start-time $(date -d "1 hour ago" +%s) \
+  --end-time $(date +%s) \
+  --query-string 'fields @timestamp, @message | filter @message like /ERROR/ | limit 20' \
+  --query 'queryId' \
+  --output text)
+
+# 等待查詢完成並取得結果
+aws logs get-query-results --query-id $QUERY_ID
+```
+
+**用 Python boto3 執行查詢：**
+```python
+import boto3
+import time
+from datetime import datetime, timedelta
+
+logs = boto3.client("logs", region_name="ap-northeast-1")
+
+# 開始查詢
+response = logs.start_query(
+    logGroupName="/aws/lambda/order-processor",
+    startTime=int((datetime.now() - timedelta(hours=1)).timestamp()),
+    endTime=int(datetime.now().timestamp()),
+    queryString="""
+        fields @timestamp, @message
+        | filter @message like /ERROR/
+        | sort @timestamp desc
+        | limit 20
+    """
+)
+query_id = response["queryId"]
+
+# 輪詢直到查詢完成
+while True:
+    result = logs.get_query_results(queryId=query_id)
+    if result["status"] in ("Complete", "Failed", "Cancelled"):
+        break
+    time.sleep(1)
+
+# 印出結果
+for row in result["results"]:
+    record = {field["field"]: field["value"] for field in row}
+    print(f"{record.get('@timestamp')} - {record.get('@message')}")
+```
+
+**與 X-Ray 的搭配使用：**
+- 用 **X-Ray** 找出哪個服務有問題（視覺化的鏈路追蹤）
+- 用 **Logs Insights** 深入查詢那個服務的詳細日誌（文字搜尋和統計）
+- 兩者互補，X-Ray 給你「地圖」，Logs Insights 給你「細節」
+
+**實際使用情境：**
+- 收到告警說錯誤率上升 → 用 Logs Insights 查詢錯誤訊息，找出是哪種錯誤
+- 分析 Lambda 的 cold start 頻率 → 查詢 `Init Duration` 欄位
+- 統計某個 API 的呼叫量和成功率 → 用 `stats` 聚合
+
+---
+
+**Docker 中的 Volume 跟專案的關係**
+
+Docker Volume 是 Docker 提供的**資料持久化機制**，解決「container 是暫時的，但資料需要長久保存」的問題。理解 Volume 和專案的關係，是搞懂 Docker 開發環境的關鍵。
+
+**為什麼需要 Volume：**
+Docker container 本身是無狀態的（stateless）。當你停止或刪除一個 container，裡面的所有資料都會消失。但有些資料你希望保留：
+- 資料庫的資料（PostgreSQL、MySQL 的資料檔案）
+- 上傳的檔案
+- 開發時的程式碼（你希望改了程式碼，container 裡立刻生效）
+
+**三種掛載方式：**
+
+```
+1. Volume（Docker 管理的儲存空間）
+   Host: /var/lib/docker/volumes/myvolume/_data
+   Container: /app/data
+
+2. Bind Mount（直接掛載 Host 的目錄）
+   Host: /Users/neo/my-project
+   Container: /app
+
+3. tmpfs Mount（只存在記憶體，container 停止就消失）
+   適合暫存敏感資料
+```
+
+**Volume 跟專案的關係（最重要的部分）：**
+
+**情境一：開發環境 — 用 Bind Mount 掛載程式碼**
+
+這是開發時最常見的用法。把你本機的專案目錄掛進 container，這樣你在本機改程式碼，container 裡立刻看到變化，不需要重新 build image。
+
+```yaml
+# docker-compose.yml（開發環境）
+services:
+  api:
+    build: .
+    ports:
+      - "8000:8000"
+    volumes:
+      # 把本機的專案目錄掛進 container 的 /app
+      - .:/app
+      # 但 node_modules 或 .venv 不要掛進來（用 container 裡的）
+      - /app/.venv
+    command: uvicorn main:app --reload --host 0.0.0.0
+```
+
+```
+你的本機                    Container
+/Users/neo/my-project  →   /app
+├── main.py            →   /app/main.py
+├── models.py          →   /app/models.py
+└── requirements.txt   →   /app/requirements.txt
+
+你改了 main.py → container 裡的 /app/main.py 立刻更新
+uvicorn 的 --reload 偵測到變化 → 自動重啟
+```
+
+**情境二：資料庫 — 用 Named Volume 保存資料**
+
+資料庫的資料不能隨著 container 消失，所以用 Named Volume 讓 Docker 幫你管理。
+
+```yaml
+# docker-compose.yml
+services:
+  db:
+    image: postgres:15
+    environment:
+      POSTGRES_PASSWORD: secret
+    volumes:
+      # postgres-data 是一個 named volume，Docker 幫你管理
+      - postgres-data:/var/lib/postgresql/data
+
+  api:
+    build: .
+    depends_on:
+      - db
+    volumes:
+      - .:/app   # 程式碼用 bind mount
+
+volumes:
+  postgres-data:   # 宣告這個 named volume
+```
+
+```bash
+# 查看所有 volumes
+docker volume ls
+
+# 查看 volume 的詳細資訊（存在哪裡）
+docker volume inspect postgres-data
+
+# 刪除 volume（資料會消失！）
+docker volume rm postgres-data
+
+# 刪除所有未使用的 volume
+docker volume prune
+```
+
+**情境三：生產環境 — 不掛載程式碼**
+
+生產環境的 image 應該把程式碼 COPY 進去，不用 volume 掛載程式碼，確保 image 是自包含的（self-contained）。
+
+```dockerfile
+# Dockerfile（生產環境）
+FROM python:3.11-slim
+
+WORKDIR /app
+
+COPY requirements.txt .
+RUN pip install -r requirements.txt
+
+# 程式碼直接 COPY 進 image，不依賴 volume
+COPY . .
+
+CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8000"]
+```
+
+**開發 vs 生產的 Volume 策略對比：**
+
+| | 開發環境 | 生產環境 |
+|--|---------|---------|
+| 程式碼 | Bind Mount（即時同步）| COPY 進 image（固定版本）|
+| 資料庫資料 | Named Volume | Named Volume 或雲端儲存（RDS）|
+| 設定檔 | Bind Mount 或環境變數 | 環境變數或 Secrets Manager |
+| 目的 | 快速迭代、即時看到變化 | 穩定、可重現、安全 |
+
+**常見的 Volume 陷阱：**
+
+```yaml
+# 陷阱：掛載整個目錄後，container 裡的 .venv 被覆蓋
+volumes:
+  - .:/app   # 這會把本機的 . 覆蓋 container 的 /app
+             # 如果本機沒有 .venv，container 裡的 .venv 也消失了
+
+# 解法：用匿名 volume 保護 container 裡的特定目錄
+volumes:
+  - .:/app
+  - /app/.venv   # 這個目錄用 container 自己的，不被 host 覆蓋
+```
+
+**完整的開發環境 docker-compose 範例：**
+
+```yaml
+version: "3.9"
+
+services:
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile.dev
+    ports:
+      - "8000:8000"
+    volumes:
+      - .:/app          # 程式碼即時同步
+      - /app/.venv      # 保護 container 裡的虛擬環境
+    environment:
+      - DATABASE_URL=postgresql://postgres:secret@db:5432/mydb
+    depends_on:
+      - db
+    command: uvicorn main:app --reload --host 0.0.0.0 --port 8000
+
+  db:
+    image: postgres:15
+    ports:
+      - "5432:5432"
+    environment:
+      POSTGRES_DB: mydb
+      POSTGRES_PASSWORD: secret
+    volumes:
+      - postgres-data:/var/lib/postgresql/data   # 資料持久化
+
+volumes:
+  postgres-data:
+```
+
+**Volume 的核心概念總結：**
+- **Bind Mount**：你控制路徑，適合開發時掛載程式碼
+- **Named Volume**：Docker 控制路徑，適合資料庫等需要持久化的資料
+- 開發環境用 Bind Mount 掛程式碼 → 改了立刻生效
+- 生產環境把程式碼 COPY 進 image → 穩定可重現
+- 資料庫永遠用 Volume → 避免 container 重啟後資料消失
