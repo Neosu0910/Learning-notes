@@ -13,3 +13,38 @@
 - TTFT
 - AWS transform
 - binary
+- docker中的CMD
+- --rm
+- entrypoint
+- adot collecter
+
+## 0603
+- Alembic
+- alignment metods
+- RLHF 
+- RAG
+- validator
+- PII data
+- subnet tier
+- K8s
+- shuddle
+
+## 0604
+- trivy
+- CVE
+- bash
+- Kiro 的SDD 什麼是SDD
+
+## 0607
+- vector（向量）
+- docker volume
+- alpine
+- curl
+- SHA
+- hash
+- bash
+
+## 0608
+- cp
+- llm as a judge
+- promptfoo

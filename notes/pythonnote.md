@@ -865,3 +865,728 @@ Pydantic v2（2023 年後）有些語法改變，常見的：
 - `@field_validator` 寫自訂驗證邏輯
 - `.model_dump()` 轉 dict，`.model_dump_json()` 轉 JSON 字串
 - FastAPI 裡用 Pydantic model 當 request/response 型別，自動驗證 + 產生文件
+
+
+---
+
+## 15. `__init__` 與 Magic Methods（魔術方法）
+
+### `__init__` 是什麼？
+
+`__init__` 是 Python class 的**初始化方法**（Initializer），在你用 `ClassName()` 建立物件時**自動被呼叫**。它的作用是設定物件的初始狀態（屬性）。
+
+> 注意：`__init__` 嚴格來說不是「建構子（constructor）」，真正建立物件的是 `__new__`。但實務上你可以把 `__init__` 當作建構子來理解，99% 的情況只需要用 `__init__`。
+
+```python
+class User:
+    def __init__(self, name, age):
+        # self 是正在被建立的物件本身（類似 JS 的 this）
+        self.name = name   # 把傳入的 name 存到物件的 .name 屬性
+        self.age = age     # 把傳入的 age 存到物件的 .age 屬性
+        self.is_active = True  # 也可以設定不需要傳入的預設屬性
+
+# 建立物件時，Python 自動呼叫 __init__
+user = User("Alice", 25)
+# 等同於：先建立空物件，再呼叫 User.__init__(空物件, "Alice", 25)
+
+print(user.name)       # Alice
+print(user.age)        # 25
+print(user.is_active)  # True
+```
+
+```javascript
+// JavaScript 對應
+class User {
+    constructor(name, age) {
+        this.name = name;
+        this.age = age;
+        this.isActive = true;
+    }
+}
+```
+
+---
+
+### `__init__` 的常見模式
+
+```python
+# 1. 帶預設值的 __init__
+class Config:
+    def __init__(self, host="localhost", port=8080, debug=False):
+        self.host = host
+        self.port = port
+        self.debug = debug
+
+config = Config()                        # 全部用預設值
+config2 = Config(port=3000, debug=True)  # 只改部分
+
+# 2. 在 __init__ 裡做驗證
+class Age:
+    def __init__(self, value):
+        if value < 0:
+            raise ValueError("年齡不能為負數")
+        self.value = value
+
+# 3. 在 __init__ 裡初始化其他資源
+class DatabaseConnection:
+    def __init__(self, connection_string):
+        self.connection_string = connection_string
+        self.pool = []           # 初始化連線池
+        self._is_connected = False  # 私有屬性（慣例用底線開頭）
+```
+
+---
+
+### 其他常用 Magic Methods
+
+Python 用 **雙底線包起來** 的方法（dunder methods）讓你自訂物件的行為：
+
+```python
+class Vector:
+    def __init__(self, x, y):
+        self.x = x
+        self.y = y
+
+    def __str__(self):
+        """print() 時顯示的字串"""
+        return f"Vector({self.x}, {self.y})"
+
+    def __repr__(self):
+        """開發時顯示的字串（在 REPL 或 debug 時）"""
+        return f"Vector(x={self.x}, y={self.y})"
+
+    def __add__(self, other):
+        """讓兩個 Vector 可以用 + 相加"""
+        return Vector(self.x + other.x, self.y + other.y)
+
+    def __eq__(self, other):
+        """定義 == 比較的邏輯"""
+        return self.x == other.x and self.y == other.y
+
+    def __len__(self):
+        """讓 len() 可以用在這個物件上"""
+        return int((self.x**2 + self.y**2) ** 0.5)
+
+v1 = Vector(1, 2)
+v2 = Vector(3, 4)
+
+print(v1)          # Vector(1, 2)      → 呼叫 __str__
+print(v1 + v2)    # Vector(4, 6)      → 呼叫 __add__
+print(v1 == v2)   # False             → 呼叫 __eq__
+print(len(v2))    # 5                 → 呼叫 __len__
+```
+
+### 常用 Magic Methods 速查
+
+| 方法 | 觸發時機 | 用途 |
+|------|----------|------|
+| `__init__` | `ClassName()` 建立物件時 | 初始化屬性 |
+| `__str__` | `print(obj)` 或 `str(obj)` | 使用者友善的字串表示 |
+| `__repr__` | 在 REPL 或 `repr(obj)` | 開發者用的字串表示 |
+| `__add__` | `obj1 + obj2` | 自訂加法 |
+| `__eq__` | `obj1 == obj2` | 自訂相等比較 |
+| `__lt__` | `obj1 < obj2` | 自訂小於比較 |
+| `__len__` | `len(obj)` | 自訂長度 |
+| `__getitem__` | `obj[key]` | 自訂索引存取 |
+| `__contains__` | `x in obj` | 自訂 `in` 運算 |
+| `__enter__` / `__exit__` | `with obj:` | Context Manager |
+
+---
+
+## 16. Async / Await（非同步程式設計）
+
+### 為什麼需要 async？
+
+當程式需要等待 I/O 操作（讀檔案、呼叫 API、查資料庫）時，同步程式會**卡住**直到操作完成。async 讓程式在等待期間可以去做其他事情，不浪費時間。
+
+```python
+# 同步：一個一個等，很慢
+import time
+
+def fetch_data():
+    time.sleep(2)  # 模擬等待 2 秒
+    return "data"
+
+# 依序執行 3 次 = 等 6 秒
+result1 = fetch_data()
+result2 = fetch_data()
+result3 = fetch_data()
+```
+
+```python
+# 非同步：同時等待，快很多
+import asyncio
+
+async def fetch_data():
+    await asyncio.sleep(2)  # 非同步等待 2 秒（不卡住）
+    return "data"
+
+async def main():
+    # 同時發出 3 個請求，只等 2 秒（不是 6 秒）
+    results = await asyncio.gather(
+        fetch_data(),
+        fetch_data(),
+        fetch_data()
+    )
+    print(results)  # ["data", "data", "data"]
+
+asyncio.run(main())
+```
+
+---
+
+### 基本語法
+
+```python
+import asyncio
+
+# 用 async def 定義非同步函式（coroutine）
+async def greet(name):
+    print(f"開始跟 {name} 打招呼...")
+    await asyncio.sleep(1)   # 模擬等待，讓出控制權
+    print(f"Hello, {name}!")
+    return f"greeted {name}"
+
+# 執行 coroutine 的方式
+async def main():
+    result = await greet("Alice")  # await 等待 coroutine 完成
+    print(result)  # "greeted Alice"
+
+# 程式進入點
+asyncio.run(main())
+```
+
+```javascript
+// JavaScript 對應（幾乎一模一樣）
+async function greet(name) {
+    console.log(`開始跟 ${name} 打招呼...`);
+    await new Promise(resolve => setTimeout(resolve, 1000));
+    console.log(`Hello, ${name}!`);
+    return `greeted ${name}`;
+}
+
+async function main() {
+    const result = await greet("Alice");
+    console.log(result);
+}
+main();
+```
+
+---
+
+### 並發執行多個任務
+
+```python
+import asyncio
+
+async def fetch_user(user_id):
+    await asyncio.sleep(1)  # 模擬 API 呼叫
+    return {"id": user_id, "name": f"User_{user_id}"}
+
+async def fetch_orders(user_id):
+    await asyncio.sleep(1.5)  # 模擬 DB 查詢
+    return [{"order_id": 1, "amount": 100}]
+
+async def main():
+    # 方法一：asyncio.gather（同時執行，等全部完成）
+    user, orders = await asyncio.gather(
+        fetch_user(1),
+        fetch_orders(1)
+    )
+    print(user)    # {"id": 1, "name": "User_1"}
+    print(orders)  # [{"order_id": 1, "amount": 100}]
+    # 總共只等 1.5 秒（取最慢的那個），不是 2.5 秒
+
+    # 方法二：asyncio.create_task（建立任務，稍後 await）
+    task1 = asyncio.create_task(fetch_user(2))
+    task2 = asyncio.create_task(fetch_orders(2))
+    # 這兩個任務已經開始跑了
+    # 做一些其他事情...
+    user2 = await task1   # 取得結果
+    orders2 = await task2
+
+asyncio.run(main())
+```
+
+```javascript
+// JavaScript 對應
+const [user, orders] = await Promise.all([
+    fetchUser(1),
+    fetchOrders(1)
+]);
+```
+
+---
+
+### 在 FastAPI 裡的 async
+
+FastAPI 天生支援 async，大部分路由都建議用 async：
+
+```python
+from fastapi import FastAPI
+import httpx  # 非同步 HTTP client（像 axios）
+
+app = FastAPI()
+
+@app.get("/users/{user_id}")
+async def get_user(user_id: int):
+    # 用 async HTTP client 呼叫其他 API
+    async with httpx.AsyncClient() as client:
+        response = await client.get(f"https://api.example.com/users/{user_id}")
+    return response.json()
+
+@app.get("/dashboard")
+async def get_dashboard():
+    # 同時查詢多個資料來源
+    async with httpx.AsyncClient() as client:
+        users, orders, stats = await asyncio.gather(
+            client.get("https://api.example.com/users"),
+            client.get("https://api.example.com/orders"),
+            client.get("https://api.example.com/stats"),
+        )
+    return {
+        "users": users.json(),
+        "orders": orders.json(),
+        "stats": stats.json()
+    }
+```
+
+---
+
+### async 重點整理
+
+| 概念 | Python | JavaScript |
+|------|--------|-----------|
+| 定義非同步函式 | `async def fn()` | `async function fn()` |
+| 等待結果 | `await coroutine` | `await promise` |
+| 同時執行多個 | `asyncio.gather(...)` | `Promise.all([...])` |
+| 執行進入點 | `asyncio.run(main())` | 直接 `await`（top-level await） |
+| 非同步 sleep | `await asyncio.sleep(1)` | `await new Promise(r => setTimeout(r, 1000))` |
+| 非同步 for 迴圈 | `async for item in ...` | `for await (const item of ...)` |
+
+---
+
+## 17. Generator（產生器）
+
+### Generator 是什麼？
+
+Generator 是一種特殊的函式，它**不會一次把所有結果算完再回傳**，而是每次被呼叫時只**產出（yield）一個值**，然後暫停，等下次被要求時再繼續。
+
+好處：**省記憶體**。如果你有一百萬筆資料，普通函式會一次建立一個一百萬元素的 list；Generator 一次只產生一個，用多少拿多少。
+
+```python
+# 普通函式：一次回傳所有結果（佔大量記憶體）
+def get_squares_list(n):
+    result = []
+    for i in range(n):
+        result.append(i ** 2)
+    return result
+
+# Generator：每次只產出一個（省記憶體）
+def get_squares_gen(n):
+    for i in range(n):
+        yield i ** 2  # yield 就像 return，但函式不會結束，只是暫停
+
+# 使用方式看起來一樣
+for num in get_squares_list(5):
+    print(num)  # 0, 1, 4, 9, 16
+
+for num in get_squares_gen(5):
+    print(num)  # 0, 1, 4, 9, 16（效果一樣，但記憶體用量極小）
+```
+
+```javascript
+// JavaScript Generator 對應
+function* getSquaresGen(n) {
+    for (let i = 0; i < n; i++) {
+        yield i ** 2;
+    }
+}
+
+for (const num of getSquaresGen(5)) {
+    console.log(num);  // 0, 1, 4, 9, 16
+}
+```
+
+---
+
+### Generator 的運作流程
+
+```python
+def countdown(n):
+    print("開始倒數！")
+    while n > 0:
+        yield n          # 暫停，把 n 交出去
+        n -= 1           # 下次繼續時從這裡開始
+    print("倒數結束！")
+
+gen = countdown(3)       # 建立 generator 物件（還沒開始執行）
+
+print(next(gen))  # 印出「開始倒數！」，然後 yield 3 → 輸出 3
+print(next(gen))  # 繼續執行，yield 2 → 輸出 2
+print(next(gen))  # 繼續執行，yield 1 → 輸出 1
+# print(next(gen))  # 印出「倒數結束！」，然後拋出 StopIteration
+
+# 通常不會手動呼叫 next()，而是用 for 迴圈
+for num in countdown(3):
+    print(num)  # 3, 2, 1（for 迴圈自動處理 StopIteration）
+```
+
+---
+
+### Generator Expression（產生器表達式）
+
+類似 List Comprehension，但用小括號 `()`，產出的是 generator 而非 list：
+
+```python
+# List Comprehension → 一次建立整個 list，佔記憶體
+squares_list = [x**2 for x in range(1000000)]  # 佔用大量記憶體
+
+# Generator Expression → 需要時才計算，幾乎不佔記憶體
+squares_gen = (x**2 for x in range(1000000))   # 幾乎不佔記憶體
+
+# 可以用在任何接受 iterable 的地方
+total = sum(x**2 for x in range(1000000))  # 直接傳入 sum()，不用額外的括號
+```
+
+---
+
+### 實際應用場景
+
+```python
+# 1. 讀取大檔案（一行一行讀，不會把整個檔案載入記憶體）
+def read_large_file(file_path):
+    with open(file_path, "r") as f:
+        for line in f:
+            yield line.strip()
+
+for line in read_large_file("huge_log.txt"):
+    if "ERROR" in line:
+        print(line)
+
+# 2. 分頁查詢資料庫
+def fetch_all_users(page_size=100):
+    offset = 0
+    while True:
+        users = db.query(f"SELECT * FROM users LIMIT {page_size} OFFSET {offset}")
+        if not users:
+            break
+        for user in users:
+            yield user
+        offset += page_size
+
+# 不管有幾百萬筆，記憶體裡一次只有 100 筆
+for user in fetch_all_users():
+    process(user)
+
+# 3. 無限序列（Fibonacci）
+def fibonacci():
+    a, b = 0, 1
+    while True:  # 無限產生，不會爆記憶體
+        yield a
+        a, b = b, a + b
+
+# 取前 10 個 Fibonacci 數
+from itertools import islice
+first_10 = list(islice(fibonacci(), 10))
+print(first_10)  # [0, 1, 1, 2, 3, 5, 8, 13, 21, 34]
+```
+
+---
+
+### yield from（委派 Generator）
+
+`yield from` 讓你把另一個 generator 的所有值「轉發」出去：
+
+```python
+def gen_numbers():
+    yield from range(3)      # 0, 1, 2
+    yield from range(10, 13) # 10, 11, 12
+
+list(gen_numbers())  # [0, 1, 2, 10, 11, 12]
+
+# 等同於：
+def gen_numbers_verbose():
+    for i in range(3):
+        yield i
+    for i in range(10, 13):
+        yield i
+```
+
+---
+
+## 18. Decorator（裝飾器）
+
+### Decorator 是什麼？
+
+Decorator 是一種**包裝函式的函式**，讓你在不修改原本函式程式碼的情況下，**新增額外的行為**（例如記錄日誌、驗證權限、計時等）。
+
+語法是在函式上方加 `@decorator_name`。
+
+```python
+# 最簡單的 decorator 範例：計時器
+import time
+
+def timer(func):
+    """包裝函式，加上計時功能"""
+    def wrapper(*args, **kwargs):
+        start = time.time()
+        result = func(*args, **kwargs)  # 呼叫原本的函式
+        end = time.time()
+        print(f"{func.__name__} 花了 {end - start:.2f} 秒")
+        return result
+    return wrapper
+
+# 使用 decorator
+@timer
+def slow_function():
+    time.sleep(1)
+    return "done"
+
+result = slow_function()
+# 印出：slow_function 花了 1.00 秒
+print(result)  # "done"
+```
+
+`@timer` 等同於 `slow_function = timer(slow_function)`，只是語法糖。
+
+```javascript
+// JavaScript 沒有原生 decorator 語法（TC39 Stage 3 提案中）
+// 但概念上等同於 Higher-Order Function：
+function timer(fn) {
+    return function(...args) {
+        const start = Date.now();
+        const result = fn(...args);
+        console.log(`${fn.name} 花了 ${Date.now() - start}ms`);
+        return result;
+    };
+}
+const slowFunction = timer(function slowFunction() { ... });
+```
+
+---
+
+### Decorator 運作原理拆解
+
+```python
+def my_decorator(func):
+    print(f"正在裝飾 {func.__name__}")  # 裝飾時就會執行
+
+    def wrapper(*args, **kwargs):
+        print("--- 函式執行前 ---")
+        result = func(*args, **kwargs)   # 呼叫原本的函式
+        print("--- 函式執行後 ---")
+        return result
+
+    return wrapper
+
+@my_decorator
+def say_hello(name):
+    print(f"Hello, {name}!")
+
+# 載入時印出：正在裝飾 say_hello
+
+say_hello("Alice")
+# --- 函式執行前 ---
+# Hello, Alice!
+# --- 函式執行後 ---
+```
+
+---
+
+### 帶參數的 Decorator
+
+如果 decorator 本身也需要接收參數，要多包一層：
+
+```python
+def repeat(times):
+    """讓函式重複執行 n 次"""
+    def decorator(func):
+        def wrapper(*args, **kwargs):
+            for _ in range(times):
+                result = func(*args, **kwargs)
+            return result
+        return wrapper
+    return decorator
+
+@repeat(times=3)
+def say_hi():
+    print("Hi!")
+
+say_hi()
+# Hi!
+# Hi!
+# Hi!
+```
+
+---
+
+### 用 functools.wraps 保留原函式資訊
+
+Decorator 會讓原函式的 `__name__`、`__doc__` 消失（被 wrapper 取代）。用 `@functools.wraps` 修正：
+
+```python
+from functools import wraps
+
+def my_decorator(func):
+    @wraps(func)  # 保留原函式的名稱和 docstring
+    def wrapper(*args, **kwargs):
+        return func(*args, **kwargs)
+    return wrapper
+
+@my_decorator
+def greet(name):
+    """跟某人打招呼"""
+    return f"Hello, {name}"
+
+print(greet.__name__)  # "greet"（沒有 @wraps 的話會是 "wrapper"）
+print(greet.__doc__)   # "跟某人打招呼"
+```
+
+---
+
+### 實際常用的 Decorator 範例
+
+```python
+from functools import wraps
+
+# 1. 日誌記錄（Logging）
+def log(func):
+    @wraps(func)
+    def wrapper(*args, **kwargs):
+        print(f"呼叫 {func.__name__}，參數: args={args}, kwargs={kwargs}")
+        result = func(*args, **kwargs)
+        print(f"{func.__name__} 回傳: {result}")
+        return result
+    return wrapper
+
+@log
+def add(a, b):
+    return a + b
+
+add(3, 5)
+# 呼叫 add，參數: args=(3, 5), kwargs={}
+# add 回傳: 8
+
+# 2. 權限檢查
+def require_admin(func):
+    @wraps(func)
+    def wrapper(user, *args, **kwargs):
+        if user.get("role") != "admin":
+            raise PermissionError("需要管理員權限")
+        return func(user, *args, **kwargs)
+    return wrapper
+
+@require_admin
+def delete_user(current_user, user_id):
+    print(f"刪除使用者 {user_id}")
+
+admin = {"name": "Alice", "role": "admin"}
+normal = {"name": "Bob", "role": "user"}
+
+delete_user(admin, 123)   # 正常執行
+# delete_user(normal, 123)  # 拋出 PermissionError
+
+# 3. 快取 / Memoization
+def cache(func):
+    """快取函式結果，相同參數不重複計算"""
+    memo = {}
+    @wraps(func)
+    def wrapper(*args):
+        if args not in memo:
+            memo[args] = func(*args)
+        return memo[args]
+    return wrapper
+
+@cache
+def fibonacci(n):
+    if n < 2:
+        return n
+    return fibonacci(n - 1) + fibonacci(n - 2)
+
+print(fibonacci(50))  # 12586269025（瞬間算完，沒有重複計算）
+
+# Python 內建也有：
+from functools import lru_cache
+
+@lru_cache(maxsize=128)
+def fibonacci(n):
+    if n < 2:
+        return n
+    return fibonacci(n - 1) + fibonacci(n - 2)
+```
+
+---
+
+### Class-based Decorator
+
+除了用函式，也可以用 class 來寫 decorator：
+
+```python
+class CountCalls:
+    """記錄函式被呼叫幾次"""
+    def __init__(self, func):
+        self.func = func
+        self.count = 0
+
+    def __call__(self, *args, **kwargs):
+        self.count += 1
+        print(f"{self.func.__name__} 已被呼叫 {self.count} 次")
+        return self.func(*args, **kwargs)
+
+@CountCalls
+def say_hello():
+    print("Hello!")
+
+say_hello()  # say_hello 已被呼叫 1 次 → Hello!
+say_hello()  # say_hello 已被呼叫 2 次 → Hello!
+say_hello()  # say_hello 已被呼叫 3 次 → Hello!
+```
+
+---
+
+### 在 FastAPI 裡的 Decorator
+
+FastAPI 的路由本身就是 decorator：
+
+```python
+from fastapi import FastAPI, Request
+from functools import wraps
+
+app = FastAPI()
+
+# FastAPI 的 @app.get() 就是 decorator
+@app.get("/")
+async def root():
+    return {"message": "Hello World"}
+
+# 自訂 decorator 用在 FastAPI 路由上
+def rate_limit(max_calls=10):
+    """簡易版流量限制 decorator"""
+    calls = {}
+
+    def decorator(func):
+        @wraps(func)
+        async def wrapper(request: Request, *args, **kwargs):
+            client_ip = request.client.host
+            calls[client_ip] = calls.get(client_ip, 0) + 1
+            if calls[client_ip] > max_calls:
+                return {"error": "Too many requests"}
+            return await func(request, *args, **kwargs)
+        return wrapper
+    return decorator
+```
+
+---
+
+### Decorator 重點整理
+
+| 概念 | 說明 |
+|------|------|
+| 用途 | 在不改動原函式的情況下新增功能 |
+| 語法 | `@decorator` 放在函式定義上方 |
+| 本質 | `fn = decorator(fn)` 的語法糖 |
+| `@wraps` | 保留原函式的 `__name__` 和 `__doc__` |
+| 帶參數 | 多包一層函式：`@decorator(arg)` |
+| 常見用途 | logging、計時、快取、權限檢查、重試 |
+| 內建好用的 | `@property`、`@staticmethod`、`@classmethod`、`@lru_cache` |
