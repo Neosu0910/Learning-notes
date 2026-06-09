@@ -2664,3 +2664,372 @@ jobs:
 
 Promptfoo 的核心價值是讓 prompt engineering 從「憑感覺調」變成「有數據驗證的工程流程」。
 
+
+## 0609
+
+**xargs**
+
+`xargs` 是一個 Unix/Linux 命令列工具，功能是**把標準輸入（stdin）的內容轉換成其他命令的參數**。當你需要把一個命令的輸出「餵給」另一個命令當作參數時，xargs 就是橋梁。
+
+**為什麼需要 xargs：**
+很多命令不接受 stdin 作為輸入，只接受命令列參數。例如 `rm` 不能直接接 pipe 傳來的檔名，你需要 xargs 把它轉換成參數。
+
+```bash
+# ❌ 這樣不行：rm 不會從 stdin 讀取檔名
+find . -name "*.log" | rm
+
+# ✓ 用 xargs 把 find 的輸出變成 rm 的參數
+find . -name "*.log" | xargs rm
+# 等同於執行：rm ./app.log ./error.log ./debug.log
+```
+
+**基本運作原理：**
+```
+stdin 輸入        →  xargs  →  組合成命令執行
+"file1.txt"                     rm file1.txt file2.txt file3.txt
+"file2.txt"
+"file3.txt"
+```
+
+**常用選項：**
+
+```bash
+# -I {}：用 {} 作為佔位符，每行執行一次命令
+echo -e "file1\nfile2\nfile3" | xargs -I {} cp {} /backup/
+# 等同於：
+# cp file1 /backup/
+# cp file2 /backup/
+# cp file3 /backup/
+
+# -n N：每次只傳 N 個參數
+echo "a b c d e f" | xargs -n 2 echo
+# 輸出：
+# a b
+# c d
+# e f
+
+# -p：執行前確認（互動模式）
+find . -name "*.tmp" | xargs -p rm
+# rm ./cache.tmp ./old.tmp ?... (y/n)
+
+# -0：搭配 find -print0，處理檔名有空格的情況
+find . -name "*.log" -print0 | xargs -0 rm
+# -print0 用 null 字元分隔，-0 告訴 xargs 用 null 字元切割
+
+# -t：印出實際執行的命令（debug 用）
+echo "hello world" | xargs -t echo "saying:"
+# echo saying: hello world   ← 印出命令
+# saying: hello world         ← 命令的輸出
+```
+
+**實用範例：**
+
+```bash
+# 1. 批次刪除舊的 Docker images
+docker images -q --filter "dangling=true" | xargs docker rmi
+
+# 2. 批次 kill 特定進程
+ps aux | grep '[n]ode' | awk '{print $2}' | xargs kill
+
+# 3. 批次 git add 特定檔案
+find . -name "*.py" -newer main.py | xargs git add
+
+# 4. 平行執行（-P 指定同時跑幾個）
+find . -name "*.jpg" | xargs -P 4 -I {} convert {} -resize 50% {}.small
+# 同時用 4 個 process 平行處理圖片
+
+# 5. 搭配 grep 搜尋多個檔案
+find . -name "*.py" | xargs grep "import boto3"
+# 在所有 .py 檔案中搜尋包含 "import boto3" 的行
+
+# 6. 計算多個檔案的行數
+find . -name "*.py" | xargs wc -l
+```
+
+**xargs vs 其他方式的比較：**
+
+```bash
+# 方式 1：xargs（推薦，處理大量檔案安全且高效）
+find . -name "*.log" | xargs rm
+
+# 方式 2：command substitution（檔名有空格會爆）
+rm $(find . -name "*.log")
+
+# 方式 3：find -exec（每個檔案 fork 一次 rm，較慢）
+find . -name "*.log" -exec rm {} \;
+
+# 方式 4：find -exec +（類似 xargs，批次傳參）
+find . -name "*.log" -exec rm {} +
+```
+
+| 方式 | 效能 | 空格安全 | 適合場景 |
+|------|------|---------|---------|
+| `xargs` | 高（批次）| 需 -0 | 大量檔案 |
+| `$()` | 中 | ❌ | 少量、簡單情況 |
+| `-exec {} \;` | 低（逐一）| ✓ | 需要每個檔案獨立處理 |
+| `-exec {} +` | 高（批次）| ✓ | find 結合其他指令 |
+
+---
+
+**Shell Script 中常用指令**
+
+Shell Script 是用 shell（如 bash、zsh）語法寫成的腳本檔案，把多個命令組合在一起自動化執行。以下整理 shell script 中最常用的指令和語法。
+
+**腳本基本結構：**
+```bash
+#!/bin/bash
+# ↑ shebang：告訴系統用哪個 shell 執行這個腳本
+
+set -euo pipefail
+# -e：任何命令失敗就立刻停止
+# -u：使用未定義變數時報錯
+# -o pipefail：pipe 中任何命令失敗，整個 pipe 就算失敗
+
+echo "Script started"
+```
+
+**變數：**
+```bash
+# 賦值（等號前後不能有空格！）
+NAME="neo"
+PORT=8000
+
+# 使用變數
+echo "Hello, $NAME"
+echo "Running on port ${PORT}"
+
+# 命令的輸出存成變數
+CURRENT_DATE=$(date +%Y-%m-%d)
+FILE_COUNT=$(ls | wc -l)
+
+# 環境變數（export 讓子 process 也能讀到）
+export DATABASE_URL="postgresql://localhost/mydb"
+
+# 預設值
+DB_HOST=${DB_HOST:-"localhost"}  # 如果 DB_HOST 沒設定，用 "localhost"
+```
+
+**條件判斷（if）：**
+```bash
+# 基本 if
+if [ "$ENV" = "production" ]; then
+    echo "Production mode"
+elif [ "$ENV" = "staging" ]; then
+    echo "Staging mode"
+else
+    echo "Development mode"
+fi
+
+# 數字比較
+if [ "$COUNT" -gt 10 ]; then    # -gt: greater than
+    echo "Count is more than 10"
+fi
+# -eq (equal), -ne (not equal), -lt (less than)
+# -ge (greater or equal), -le (less or equal)
+
+# 檔案判斷
+if [ -f "config.yaml" ]; then   # -f: 檔案存在
+    echo "Config found"
+fi
+if [ -d "logs/" ]; then         # -d: 目錄存在
+    echo "Logs directory exists"
+fi
+if [ -z "$VAR" ]; then          # -z: 字串為空
+    echo "VAR is empty"
+fi
+if [ -n "$VAR" ]; then          # -n: 字串不為空
+    echo "VAR has value"
+fi
+
+# [[ ]] 加強版（支援 && || 和 regex）
+if [[ "$FILE" == *.py && -f "$FILE" ]]; then
+    echo "Python file exists"
+fi
+```
+
+**迴圈（for / while）：**
+```bash
+# for 迴圈
+for file in *.py; do
+    echo "Processing: $file"
+    python "$file"
+done
+
+# 數字範圍
+for i in {1..5}; do
+    echo "Iteration $i"
+done
+
+# C-style for
+for ((i=0; i<10; i++)); do
+    echo "$i"
+done
+
+# while 迴圈
+count=0
+while [ $count -lt 5 ]; do
+    echo "Count: $count"
+    count=$((count + 1))
+done
+
+# 逐行讀取檔案
+while IFS= read -r line; do
+    echo "Line: $line"
+done < input.txt
+```
+
+**函式：**
+```bash
+# 定義函式
+deploy() {
+    local env=$1        # local 讓變數只在函式內有效
+    local version=$2
+
+    echo "Deploying version $version to $env"
+    
+    if [ "$env" = "production" ]; then
+        echo "⚠️  Production deployment!"
+        return 0     # return 回傳 exit code（0=成功）
+    fi
+}
+
+# 呼叫函式
+deploy "staging" "v2.1.0"
+
+# 取得函式的回傳值
+check_health() {
+    curl -s -o /dev/null -w "%{http_code}" "http://localhost:8000/health"
+}
+
+status=$(check_health)
+if [ "$status" = "200" ]; then
+    echo "Service is healthy"
+fi
+```
+
+**常用內建指令：**
+
+| 指令 | 用途 | 範例 |
+|------|------|------|
+| `echo` | 輸出文字 | `echo "hello"` |
+| `read` | 讀取用戶輸入 | `read -p "Name: " name` |
+| `test` / `[ ]` | 條件判斷 | `[ -f file.txt ]` |
+| `exit` | 結束腳本 | `exit 1` (1=失敗) |
+| `source` / `.` | 載入其他腳本 | `source .env` |
+| `export` | 設定環境變數 | `export PATH=$PATH:/new` |
+| `local` | 函式內部變數 | `local x=10` |
+| `shift` | 移除第一個參數 | 處理不定數量的參數 |
+| `trap` | 捕捉信號 | `trap cleanup EXIT` |
+
+**常用外部指令：**
+
+| 指令 | 用途 | 範例 |
+|------|------|------|
+| `grep` | 搜尋文字 | `grep "error" log.txt` |
+| `sed` | 取代文字 | `sed 's/old/new/g' file` |
+| `awk` | 文字處理 | `awk '{print $2}' file` |
+| `cut` | 切割欄位 | `cut -d',' -f2 data.csv` |
+| `sort` | 排序 | `sort -n numbers.txt` |
+| `uniq` | 去除重複 | `sort file \| uniq` |
+| `wc` | 計數（行/字/字元）| `wc -l file.txt` |
+| `find` | 搜尋檔案 | `find . -name "*.py"` |
+| `xargs` | 轉換參數 | `find . \| xargs rm` |
+| `curl` | HTTP 請求 | `curl -X GET url` |
+| `jq` | 解析 JSON | `cat data.json \| jq '.name'` |
+| `tee` | 同時輸出和寫檔 | `cmd \| tee log.txt` |
+
+**特殊變數：**
+```bash
+$0       # 腳本名稱
+$1 $2 $3 # 第 1、2、3 個參數
+$#       # 參數總數
+$@       # 所有參數（作為陣列）
+$*       # 所有參數（作為一個字串）
+$?       # 上一個命令的 exit code（0=成功）
+$$       # 目前腳本的 PID
+```
+
+**Pipe（管線）和重導向：**
+```bash
+# Pipe：把前面的輸出接到後面的輸入
+cat access.log | grep "ERROR" | sort | uniq -c | sort -rn | head -10
+# 找出 log 中出現最多的 ERROR 類型 Top 10
+
+# 重導向
+echo "hello" > file.txt      # 覆蓋寫入
+echo "world" >> file.txt     # 追加寫入
+command 2>/dev/null           # 丟棄 stderr
+command > output.txt 2>&1    # stdout 和 stderr 都寫到同一個檔案
+```
+
+**實用腳本範例：部署腳本**
+```bash
+#!/bin/bash
+set -euo pipefail
+
+# 參數
+ENV=${1:-"staging"}
+IMAGE_TAG=${2:-"latest"}
+REGISTRY="123456789.dkr.ecr.ap-northeast-1.amazonaws.com"
+SERVICE_NAME="my-app"
+
+echo "🚀 Deploying $SERVICE_NAME:$IMAGE_TAG to $ENV"
+
+# 確認環境
+if [ "$ENV" = "production" ]; then
+    read -p "⚠️  Are you sure you want to deploy to production? (y/n) " confirm
+    if [ "$confirm" != "y" ]; then
+        echo "Cancelled."
+        exit 0
+    fi
+fi
+
+# Build & Push
+echo "📦 Building Docker image..."
+docker build -t "$REGISTRY/$SERVICE_NAME:$IMAGE_TAG" .
+docker push "$REGISTRY/$SERVICE_NAME:$IMAGE_TAG"
+
+# Deploy to ECS
+echo "🔄 Updating ECS service..."
+aws ecs update-service \
+    --cluster "$ENV-cluster" \
+    --service "$SERVICE_NAME" \
+    --force-new-deployment
+
+# Wait for deployment
+echo "⏳ Waiting for deployment to stabilize..."
+aws ecs wait services-stable \
+    --cluster "$ENV-cluster" \
+    --services "$SERVICE_NAME"
+
+echo "✅ Deployment complete!"
+```
+
+**trap 清理資源：**
+```bash
+#!/bin/bash
+TEMP_DIR=$(mktemp -d)
+
+# 不管腳本怎麼結束（正常或出錯），都清理暫存目錄
+trap "rm -rf $TEMP_DIR" EXIT
+
+# 腳本邏輯...
+cp important_file.txt "$TEMP_DIR/"
+process "$TEMP_DIR/important_file.txt"
+# 即使這裡出錯，trap 也會確保 $TEMP_DIR 被刪除
+```
+
+**檢查命令是否存在：**
+```bash
+# 常用在腳本開頭，確認需要的工具有安裝
+command -v docker >/dev/null 2>&1 || {
+    echo "Error: docker is not installed"
+    exit 1
+}
+
+command -v aws >/dev/null 2>&1 || {
+    echo "Error: AWS CLI is not installed"
+    exit 1
+}
+```
+

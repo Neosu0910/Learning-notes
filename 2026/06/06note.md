@@ -48,3 +48,7 @@
 - cp
 - llm as a judge
 - promptfoo
+
+## 0609 
+- xargs
+- shell script 中常用指令
