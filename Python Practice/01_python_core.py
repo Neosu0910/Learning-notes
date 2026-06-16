@@ -110,25 +110,28 @@ print(p.distance_to_origin())  # 5.0
 
 class Message:
     def __init__(self, role: str, content: str) -> None:
-        pass
+        self.role = role
+        self.content = content
+        self.blocked: bool = False
 
     def __repr__(self) -> str:
-        pass
+        return f"Message(role={self.role},content={self.content[:20]})"
 
     def is_user(self) -> bool:
-        pass
+        return self.role == "user"
 
     def block(self) -> None:
-        pass
+         self.content = "[BLOCKED]"
+         self.blocked = True
 
 
 # 驗證:
-# m = Message("user", "Hello, how are you?")
-# print(m)              # Message(role=user, content=Hello, how are you?)
-# print(m.is_user())    # True
-# m.block()
-# print(m.content)      # [BLOCKED]
-# print(m.blocked)      # True
+m = Message("user", "Hello, how are you?")
+print(m)              # Message(role=user, content=Hello, how are you?)
+print(m.is_user())    # True
+m.block()
+print(m.content)      # [BLOCKED]
+print(m.blocked)      # True
 
 
 # ================================================================
