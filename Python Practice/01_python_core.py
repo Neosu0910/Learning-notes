@@ -165,18 +165,28 @@ print(safe_divide(10, 0))   # None
 # TODO C1: 實作 safe_get_index
 # 從 list 取得指定 index 的值，index 超出範圍回傳 None
 def safe_get_index(items: list, index: int):
-    pass
+    try:
+        return items[index]
+    except IndexError:
+        return None
+
+# 驗證:
+print(safe_get_index([10, 20, 30], 1))   # 20
+print(safe_get_index([10, 20, 30], 99))  # None
 
 
 # TODO C2: 實作 parse_int
 # 把字串轉成 int，失敗時回傳 None
 def parse_int(text: str) -> int | None:
-    pass
+    try:
+        return int(text)
+    except (ValueError, TypeError):
+        return None
 
 # 驗證:
-# print(parse_int("42"))     # 42
-# print(parse_int("hello"))  # None
-# print(parse_int("3.14"))   # None
+print(parse_int("42"))     # 42
+print(parse_int("hello"))  # None
+print(parse_int("3.14"))   # None
 
 
 # TODO C3: 實作 validate_role
@@ -184,7 +194,16 @@ def parse_int(text: str) -> int | None:
 # 參考真實 codebase: GuardrailManager.__init__ 中有許多 validate 邏輯
 def validate_role(role: str) -> None:
     allowed = {"user", "assistant"}
-    pass  # 若 role not in allowed, raise ValueError(f"Invalid role: {role}")
+    if role not in allowed:
+        raise ValueError(f"Invalid role: {role}")
+
+# 驗證:
+validate_role("user")       # 不會報錯
+validate_role("assistant")  # 不會報錯
+try:
+    validate_role("hacker")
+except ValueError as e:
+    print(f"Caught: {e}")   # Caught: Invalid role: hacker
 
 
 # ================================================================
@@ -216,20 +235,35 @@ fake_response = {
 # TODO D1: 從 fake_response 取出 output 文字
 # 答案應該是 "很抱歉，我無法回答這個問題。"
 def get_output_text(response: dict) -> str | None:
-    pass
+    try:
+        return response["outputs"][0]["text"]
+    except (KeyError, IndexError):
+        return None
+
+print(get_output_text(fake_response))  # 很抱歉，我無法回答這個問題。
 
 
 # TODO D2: 從 fake_response 找出所有 action == "BLOCKED" 的 topic name
 # 答案應該是 ["violence"]
 def get_blocked_topics(response: dict) -> list[str]:
-    pass
+    blocked = []
+    topics = response["assessments"][0]["topicPolicy"]["topics"]
+    for topic in topics:
+        if topic["action"] == "BLOCKED":
+            blocked.append(topic["name"])
+    return blocked
+
+print(get_blocked_topics(fake_response))  # ['violence']
 
 
 # TODO D3: 判斷 response 是否被 guardrail 攔截
 BLOCK_FLAG = "GUARDRAIL_INTERVENED"
 
 def is_blocked(response: dict) -> bool:
-    pass
+    return response.get("action") == BLOCK_FLAG
+
+print(is_blocked(fake_response))          # True
+print(is_blocked({"action": "NONE"}))     # False
 
 
 # ================================================================
